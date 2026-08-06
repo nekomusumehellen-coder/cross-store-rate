@@ -10,11 +10,15 @@
 
 跨店率 = 分子 ÷ 分母：
 
-- **分母**：回兴店当前持有有效套餐(`userCardStatus == 'VALID'`)的会员数。**不用会员列表接口**
+- **分母**：回兴店当前持有有效套餐的会员数。**不用会员列表接口**
   （`GET /api/users`，实测经常 500 报错，不稳定），改用"购买记录"(`purchases.js` 默认模式) +
-  "验券记录"(`purchases.js?mode=exchange-records`) 反推——这两个接口都自带
-  `userCardStatus`/`remainValue`/`userCardExpiredTime`，把两边结果合并、按手机号去重，
+  "验券记录"(`purchases.js?mode=exchange-records`) 反推，把两边结果合并、按手机号去重，
   就是当前持有有效套餐的人数。
+  ⚠️ **`userCardStatus=VALID` 必须当查询参数传给接口走服务端过滤，不能拉全量自己在客户端按字段筛**——
+  2026-08-06 实测两者对不上（客户端筛出76人，服务端筛出的验券记录只有32条，后者才是跟用户在
+  后台手动核对一致的准确数字）。而且**传了 `userCardStatus=VALID` 就不能再叠加 `startTime`/`endTime`
+  日期范围**，一叠加宽日期范围验券记录反而从32条变成78条——所以 `collect.js` 里查这两个接口时
+  完全不传日期范围，只靠 `userCardStatus` 过滤。
 - **分子**：当天(北京时间)跨店结算**流出方向**(`purchases.js?mode=cross-store-settlement&direction=out`)
   涉及的用户数，按手机号去重——也就是"回兴店卖出的卡，今天在别的门店消费"的人数。
 
