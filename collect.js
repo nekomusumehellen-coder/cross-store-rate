@@ -47,17 +47,23 @@ async function fetchAllPages(paramsBase) {
   return all;
 }
 
-// 分母：回兴店当前持有有效套餐的会员数（购买记录 + 验券记录，按手机号去重）
+// 分母：回兴店当前持有有效套餐的会员数（购买记录 + 验券记录，按手机号去重）。
+// ⚠️ userCardStatus=VALID 必须当成服务端过滤参数传给王知之接口，不能拉全量自己在客户端筛——
+// 2026-08-06 实测发现两者结果对不上（客户端筛出76人，服务端筛出的验券记录只有32条），
+// 服务端的判断应该结合了当前时间等因素，不是只看这个静态字段，用户在后台手动核对过服务端筛选的数字才是准的。
+// ⚠️ 传了 userCardStatus=VALID 之后，startTime/endTime 就不能再传了——一旦叠加日期范围，
+// 验券记录会从32条变成78条（数字反而不对），跟用户手动在后台核对的抓包请求（日期字段是空字符串）
+// 保持一致最保险：这里不传日期范围，只靠 userCardStatus 服务端过滤。
 async function computeDenominator() {
   const [purchases, exchanges] = await Promise.all([
-    fetchAllPages({ store: STORE }),
-    fetchAllPages({ store: STORE, mode: "exchange-records", startTime: "2020-01-01 00:00:00", endTime: `${beijingDateStr()} 23:59:59` }),
+    fetchAllPages({ store: STORE, userCardStatus: "VALID" }),
+    fetchAllPages({ store: STORE, mode: "exchange-records", userCardStatus: "VALID", channel: "" }),
   ]);
   const validUsers = new Set();
   for (const r of [...purchases, ...exchanges]) {
-    if (r.userCardStatus === "VALID" && r.userPhone) validUsers.add(r.userPhone);
+    if (r.userPhone) validUsers.add(r.userPhone);
   }
-  console.log(`分母来源：购买记录 ${purchases.length} 条 + 验券记录 ${exchanges.length} 条，有效会员去重后 ${validUsers.size} 人`);
+  console.log(`分母来源：购买记录(服务端已筛VALID) ${purchases.length} 条 + 验券记录(服务端已筛VALID) ${exchanges.length} 条，去重后 ${validUsers.size} 人`);
   return validUsers.size;
 }
 
