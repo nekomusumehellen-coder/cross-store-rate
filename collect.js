@@ -1,10 +1,14 @@
-// 跨店率每日结算脚本：每天跑一次，算出"当天回兴店的跨店率"，追加一条记录到 history.json。
+// 跨店率每日结算脚本：每天凌晨跑一次，算出"昨天"回兴店的跨店率，追加一条记录到 history.json。
+//
+// ⚠️ 算的是"昨天"，不是"今天"：跨店结算数据要过凌晨才会把前一天的记录结算完成，
+// 当天白天去查当天的跨店结算数据是不完整/查不到的，2026-08-06 用户提醒过这个业务规则。
+// 所以定时任务放在凌晨跑（这时候"昨天"已经结算完了），脚本里算的日期也是 beijingDateStr(-1)。
 //
 // 跨店率 = 分子 / 分母
 //   分母：回兴店当前持有有效套餐(userCardStatus=VALID)的会员数——不用会员列表接口（那个经常
 //         500报错），改用"购买记录"(purchase-orders) + "验券记录"(exchange-records) 反推，
 //         这两个接口都自带 userCardStatus/remainValue/userCardExpiredTime，按手机号去重就是分母。
-//   分子：当天(北京时间)回兴店卖出的卡、在别的门店消费的用户数（跨店结算"流出"方向，按手机号去重）。
+//   分子：昨天(北京时间)回兴店卖出的卡、在别的门店消费的用户数（跨店结算"流出"方向，按手机号去重）。
 //
 // GitHub Actions 每天定时跑，跑完把 history.json 提交回仓库，index.html 直接 fetch 这个文件展示。
 
@@ -90,7 +94,7 @@ async function main() {
     process.exit(1);
   }
 
-  const dateStr = beijingDateStr();
+  const dateStr = beijingDateStr(-1); // 昨天
   const [denominator, numerator] = await Promise.all([computeDenominator(), computeNumerator(dateStr)]);
   const rate = denominator > 0 ? Number(((numerator / denominator) * 100).toFixed(2)) : 0;
 

@@ -2,7 +2,7 @@ name: 跨店率每日结算
 
 on:
   schedule:
-    - cron: "50 15 * * *" # 北京时间每天 23:50
+    - cron: "30 16 * * *" # 北京时间每天 00:30（算前一天的数据，要等过了凌晨才结算完）
   workflow_dispatch: {}
 
 permissions:
