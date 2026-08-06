@@ -1,0 +1,50 @@
+name: 跨店率每日结算
+
+on:
+  schedule:
+    - cron: "50 15 * * *" # 北京时间每天 23:50
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 运行结算脚本
+        env:
+          FUNC_SHARED_SECRET: ${{ secrets.FUNC_SHARED_SECRET }}
+        run: node collect.js
+
+      - name: 提交 history.json
+        run: |
+          git config user.name "cross-store-rate-bot"
+          git config user.email "actions@github.com"
+          git add history.json
+          git diff --cached --quiet || git commit -m "更新跨店率数据 [skip ci]"
+          git push
+
+  deploy-pages:
+    needs: collect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: 拉取最新（含刚提交的 history.json）
+        run: git pull
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
