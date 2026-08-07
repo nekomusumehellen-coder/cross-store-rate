@@ -21,11 +21,11 @@ jobs:
           FUNC_SHARED_SECRET: ${{ secrets.FUNC_SHARED_SECRET }}
         run: node collect.js
 
-      - name: 提交 history.json
+      - name: 提交 history.json / history.js
         run: |
           git config user.name "cross-store-rate-bot"
           git config user.email "actions@github.com"
-          git add history.json
+          git add history.json history.js
           git diff --cached --quiet || git commit -m "更新跨店率数据 [skip ci]"
           git push
 

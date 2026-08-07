@@ -1,33 +1,44 @@
 # cross-store-rate
 
-回兴店跨店率每日结算 + 可视化看板。每天北京时间 23:50 通过 GitHub Actions 自动结算一次，
-结果通过 GitHub Pages 展示成一个带日期区间选择的动态曲线图。
+回兴店跨店率每日结算 + 可视化看板。每天北京时间 00:30 通过 GitHub Actions 自动结算"前一天"的数据，
+结果通过 GitHub Pages 展示成一个带日期区间选择的动态曲线图，也支持本地双击 `index.html` 直接看。
 
 跟 `booking-fn` 是分开的独立小项目，不占用它在 Vercel 上宝贵的12个函数名额，纯粹调用
 `booking-fn` 已有的接口，没有自己的后端。
 
 ## 跨店率怎么算的
 
-跨店率 = 分子 ÷ 分母：
+跨店率 = 分子 ÷ 分母，算法在 `lib.js` 里，`collect.js`（每日结算）和 `backfill.js`（历史回填）共用同一份，
+保证两边数字口径一致，不会因为算法不一样出现断层。
 
-- **分母**：回兴店当前持有有效套餐的会员数。**不用会员列表接口**
+- **分母**：回兴店当天持有有效套餐的会员数（按手机号去重）。**不用会员列表接口**
   （`GET /api/users`，实测经常 500 报错，不稳定），改用"购买记录"(`purchases.js` 默认模式) +
-  "验券记录"(`purchases.js?mode=exchange-records`) 反推，把两边结果合并、按手机号去重，
-  就是当前持有有效套餐的人数。
-  ⚠️ **`userCardStatus=VALID` 必须当查询参数传给接口走服务端过滤，不能拉全量自己在客户端按字段筛**——
-  2026-08-06 实测两者对不上（客户端筛出76人，服务端筛出的验券记录只有32条，后者才是跟用户在
-  后台手动核对一致的准确数字）。而且**传了 `userCardStatus=VALID` 就不能再叠加 `startTime`/`endTime`
-  日期范围**，一叠加宽日期范围验券记录反而从32条变成78条——所以 `collect.js` 里查这两个接口时
-  完全不传日期范围，只靠 `userCardStatus` 过滤。
+  "验券记录"(`purchases.js?mode=exchange-records`) 反推出每张卡的有效区间：
+  `[生效日期, 失效日期]` = `[orderCreateTime, userCardExpiredTime]`。
+  某天落在区间内就算这个用户当天有效，一天的分母 = 当天有至少一张卡覆盖的用户数。
+  ⚠️ **这是近似值**：如果一张卡在到期日之前就被用完了，`userCardExpiredTime` 不会跟着更新提前，
+  这张卡会被算成"比实际有效期更长"，分母会略微偏高——2026-08-06 已跟用户确认接受这个精度
+  （精确算法要挨个查每张失效卡的使用记录定位真实失效时间，量级在千张以上、跑起来太慢）。
+  ⚠️ **查这两个接口必须传 `startTime`/`endTime` 日期范围，不能留空**——王知之的
+  `exchange-records` 接口不传日期范围时会默默截断成一小段最近记录，不是真的"不限时间"，
+  2026-08-06 踩过这个坑（一度被截断到只有32/78/99条这种不稳定的小数字，传了正确日期范围后才稳定在
+  2300+条）。
 - **分子**：当天(北京时间)跨店结算**流出方向**(`purchases.js?mode=cross-store-settlement&direction=out`)
-  涉及的用户数，按手机号去重——也就是"回兴店卖出的卡，今天在别的门店消费"的人数。
+  涉及的用户数，按手机号去重——也就是"回兴店卖出的卡，当天在别的门店消费"的人数，这个是精确值不是近似值。
 
 ## 文件结构
 
-- `collect.js`：每日结算脚本，算完一条记录追加/覆盖进 `history.json`
-- `history.json`：累积的每日数据 `[{date, numerator, denominator, rate}, ...]`
-- `index.html`：看板页面，fetch `history.json` 渲染动态曲线图，带日期区间选择器和明细表格
-- `.github/workflows/collect.yml`：每天定时跑 `collect.js`，提交 `history.json`，再部署到 GitHub Pages
+- `lib.js`：共享逻辑（拉数据、算分母分子），`collect.js`/`backfill.js` 都靠它
+- `collect.js`：每日结算脚本，算出"前一天"一条记录，追加/覆盖进 `history.json`
+- `backfill.js`：一次性历史回填脚本，见下面单独一节
+- `history.json`：累积的每日数据 `[{date, numerator, denominator, rate, backfilled?}, ...]`，
+  `backfilled: true` 表示这条是回填出来的近似值，不是真实每日结算跑出来的
+- `history.js`：内容跟 `history.json` 完全一样，只是包了一层 `window.HISTORY_DATA = [...]`——
+  `index.html` 用 `<script src="./history.js">` 加载数据而不是 `fetch('./history.json')`，
+  因为本地双击打开网页时 `fetch` 读同目录文件会被浏览器的本地文件 CORS 限制挡住、显示不出数据，
+  `<script src>` 没有这个限制，两种打开方式都能用（2026-08-06 发现这个问题后改的）
+- `index.html`：看板页面，动态曲线图 + 日期区间选择器 + 明细表格
+- `.github/workflows/collect.yml`：每天定时跑 `collect.js`，提交 `history.json`/`history.js`，再部署到 GitHub Pages
 
 ## 配置
 
@@ -39,17 +50,30 @@ GitHub 仓库 Settings → Secrets and variables → Actions 加一个 secret：
 
 Settings → Pages，Source 选 "GitHub Actions"（workflow 里已经配好了部署步骤，选完就行）。
 
-监控哪个门店，改 `collect.js` 顶部的 `STORE` 常量（默认 `"回兴"`），门店关键词规则跟 `booking-fn` 一样。
+监控哪个门店，改 `lib.js` 顶部的 `STORE` 常量（默认 `"回兴"`），门店关键词规则跟 `booking-fn` 一样。
+
+## 历史回填
+
+`collect.js` 只会从它第一次跑的那天开始往后累积。如果想把更早的历史数据也补上：
+
+```bash
+FUNC_SHARED_SECRET=xxx node backfill.js
+```
+
+- 回填的时间范围写死在 `lib.js` 的 `EARLIEST_DATE` 常量里（现在是 `2025-06-01`，回兴店用户要求的起点）
+- 只回填 `history.json` 里**还没有**的日期，不会覆盖 `collect.js` 正式跑出来的真实记录
+- 只回填到"昨天"，跟每日结算的口径一致（今天的数据还没"结算完"）
+- 这是一次性重活（要拉全量购买+验券+跨店结算历史数据，两千多条，跑下来大概1分钟），补完一次以后不用再跑，
+  除非想扩大 `EARLIEST_DATE` 往更早补
 
 ## 数据口径的几个说明
 
-- **不做历史回填**：从第一次跑 `collect.js` 那天开始累积，之前的日期没有数据，`index.html` 会正常显示"这个区间还没有数据"
 - **同一天重复跑会覆盖**，不会重复累加——如果一天内手动触发了好几次 workflow，`history.json` 里这天永远只有最新一次跑出来的结果
-- **验券记录默认只查美团渠道**（`exchangeTypes: ['MEI_TUAN']`，目前已知唯一的第三方渠道），如果以后接了别的验券渠道，`collect.js` 里 `fetchAllPages` 调用 exchange-records 那行要加 `channel: ''`（查全部渠道）
+- **验券记录查全部渠道**（`channel: ''`），不是只查美团——2026-08-06 发现不传渠道限制不影响准确性，干脆查全部更完整
 
 ## 手动触发测试
 
-去 GitHub 仓库 Actions 页面，选这个 workflow，点 "Run workflow" 立刻跑一次（会重新结算"今天"这一条）。
+去 GitHub 仓库 Actions 页面，选这个 workflow，点 "Run workflow" 立刻跑一次（会重新结算"前一天"这一条）。
 
 ## 本地测试
 
@@ -57,4 +81,5 @@ Settings → Pages，Source 选 "GitHub Actions"（workflow 里已经配好了�
 FUNC_SHARED_SECRET=xxx node collect.js
 ```
 
-⚠️ 本地跑会直接改本地的 `history.json`，测完注意别把测试数据误提交上去。
+⚠️ 本地跑会直接改本地的 `history.json`/`history.js`，测完注意别把测试数据误提交上去
+（`git checkout -- history.json history.js` 可以丢弃本地改动）。
