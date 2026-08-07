@@ -3020,7 +3020,6 @@
     "date": "2026-08-06",
     "numerator": 20,
     "denominator": 101,
-    "rate": 19.8,
-    "backfilled": true
+    "rate": 19.8
   }
 ]
