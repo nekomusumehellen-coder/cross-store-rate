@@ -3027,5 +3027,11 @@
     "numerator": 17,
     "denominator": 94,
     "rate": 18.09
+  },
+  {
+    "date": "2026-08-08",
+    "numerator": 0,
+    "denominator": 95,
+    "rate": 0
   }
 ]
