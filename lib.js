@@ -149,4 +149,87 @@ async function computeNumeratorForDate(dateStr) {
   return users.size;
 }
 
-module.exports = { STORE, EARLIEST_DATE, beijingDateStr, fetchAllPages, buildCardIntervals, buildCardRecords, denominatorOnDate, computeNumeratorForDate };
+// `orders.js` 是完全不同的接口路径（`/api/orders`，不是 `/api/purchases`），响应结构也不一样
+// （顶层直接是 `{orders, total}`，不是 `{data:{rows,total}}`）——所以单独写一个分页+重试函数，
+// 不能直接复用 fetchAllPages。
+// ⚠️ 2026-08-11 踩过一个坑：分页参数名是 `pageNo`，不是 `currentPage`——一开始传了 `currentPage`，
+// `orders.js` 内部读的是 `pageNo`（见 booking-fn/api/orders.js 第27行），没读到就一直默认第1页，
+// 导致16100条订单全是同一页数据重复16100/100=161次拼出来的，distinct id 只有100个，
+// 算出来的"当日状态"活动人数少得离谱（16100条订单只查出46个不同手机号，明显不对）。
+async function fetchOneOrdersPage(paramsBase, page) {
+  const params = new URLSearchParams({ ...paramsBase, pageSize: "100", pageNo: String(page) });
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await fetch(`${BASE}/orders?${params}`, {
+        headers: { "x-func-secret": FUNC_SECRET },
+      });
+      const json = await resp.json();
+      if (!Array.isArray(json.orders)) {
+        lastErr = new Error(`接口返回异常：${JSON.stringify(json)}`);
+      } else {
+        return json;
+      }
+    } catch (e) {
+      lastErr = e;
+    }
+    console.error(`订单第${page}页第${attempt}次请求失败：${lastErr.message}，${attempt < 3 ? "重试中..." : "放弃"}`);
+    if (attempt < 3) await sleep(2000 * attempt);
+  }
+  throw lastErr;
+}
+
+async function fetchAllOrders(paramsBase, onProgress) {
+  let page = 1;
+  const all = [];
+  while (true) {
+    const json = await fetchOneOrdersPage(paramsBase, page);
+    all.push(...json.orders);
+    if (onProgress) onProgress(all.length, json.total);
+    if (json.orders.length < 100 || all.length >= json.total) break;
+    page++;
+  }
+  return all;
+}
+
+// 2026-08-11 用户要求：明细表格要加一列"当日状态"，需要拿两份额外数据按手机号整理成
+// "这个人哪几天有活动"的日期集合——供 gen-local-detail.js 生成本地数据文件时调用。
+// - settlement：跨店结算(流出方向)记录，`startTime` 是这个人当天在别的门店消费的日期
+// - booking：回兴店本店的订座记录，`startTime` 是订的那天，**排除已取消的**（orderStatus
+//   "4"=已取消、"9"=未到店取消——这两种不代表真的有到店/有效预约，不该算"有活动"）
+async function buildActivityDates(untilDateStr) {
+  const rangeParams = { startTime: `${EARLIEST_DATE} 00:00:00`, endTime: `${untilDateStr} 23:59:59` };
+  const settlementRows = await fetchAllPages({
+    mode: "cross-store-settlement",
+    store: STORE,
+    direction: "out",
+    ...rangeParams,
+  });
+  const bookingRows = await fetchAllOrders({
+    store: STORE,
+    studyBeginTime: EARLIEST_DATE,
+    studyEndTime: untilDateStr,
+  });
+
+  const settlement = {};
+  for (const r of settlementRows) {
+    if (!r.userPhone || !r.startTime) continue;
+    (settlement[r.userPhone] ||= new Set()).add(r.startTime.slice(0, 10));
+  }
+  const booking = {};
+  const CANCELLED = new Set(["4", "9"]);
+  for (const r of bookingRows) {
+    if (!r.userPhone || !r.startTime) continue;
+    if (CANCELLED.has(String(r.orderStatus))) continue;
+    (booking[r.userPhone] ||= new Set()).add(r.startTime.slice(0, 10));
+  }
+  const toSortedArray = (obj) => {
+    const out = {};
+    for (const phone of Object.keys(obj)) out[phone] = [...obj[phone]].sort();
+    return out;
+  };
+  console.log(`当日状态数据源：跨店结算 ${settlementRows.length} 条(${Object.keys(settlement).length}人) + 本店订座 ${bookingRows.length} 条(排除已取消后 ${Object.keys(booking).length}人)`);
+  return { settlement: toSortedArray(settlement), booking: toSortedArray(booking) };
+}
+
+module.exports = { STORE, EARLIEST_DATE, beijingDateStr, fetchAllPages, fetchAllOrders, buildCardIntervals, buildCardRecords, buildActivityDates, denominatorOnDate, computeNumeratorForDate };

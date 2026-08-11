@@ -121,6 +121,8 @@ button.toggle {
 }
 button.toggle.active { background: var(--series-1); color: white; border-color: var(--series-1); }
 .tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--gridline); color: var(--text-secondary); }
+.tag-active { background: color-mix(in srgb, var(--cat-3) 25%, var(--surface-1)); color: var(--cat-3); font-weight: 600; }
+.tag-idle { background: var(--gridline); color: var(--text-muted); }
 /* 卡种分类色行底纹 + 占比条形统计 */
 .card-row { background-color: color-mix(in srgb, var(--row-color, var(--cat-other)) 16%, var(--surface-1)); }
 .card-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--row-color, var(--cat-other)); vertical-align: middle; }
@@ -362,6 +364,7 @@ function renderUserDetail() {
   const sorted = [...tableRows].sort((a, b) => (a.phone < b.phone ? -1 : a.phone > b.phone ? 1 : (a.start < b.start ? -1 : 1)));
   const rows = sorted.map((r) => {
     const color = cardColorMap[r.cardName || '(未命名)'] || 'var(--cat-1)';
+    const status = dateStr ? computeDayStatus(r.phone, dateStr) : { text: '—', kind: 'idle' };
     return `
     <tr class="card-row" style="--row-color: ${color}">
       <td>${userDetailMask ? maskPhone(r.phone) : r.phone}</td>
@@ -370,15 +373,42 @@ function renderUserDetail() {
       <td><span class="tag">${r.source === 'purchase' ? '小程序内购买' : '第三方验券'}</span></td>
       <td class="num">${r.start}</td>
       <td class="num">${r.end}</td>
+      <td><span class="tag tag-${status.kind}">${status.text}</span></td>
     </tr>
   `;
   }).join('');
   el.innerHTML = `
     <table>
-      <thead><tr><th>手机号</th><th>昵称</th><th>卡名</th><th>来源</th><th class="num">生效日期</th><th class="num">失效日期</th></tr></thead>
+      <thead><tr><th>手机号</th><th>昵称</th><th>卡名</th><th>来源</th><th class="num">生效日期</th><th class="num">失效日期</th><th>当日状态</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   `;
+}
+
+// "当日状态"：拿 gen-local-detail.js 生成的 window.LOCAL_ACTIVITY_DATA（跨店结算+本店订座历史，
+// 按手机号整理成日期集合）跟"查看日期"比对：
+// - 当天在跨店结算(流出方向)记录里出现 → "跨店预定"
+// - 当天在回兴店本店订座记录里出现(已剔除已取消的) → "本店预定"
+// - 两边当天都没有 → 找这个人在"查看日期"之前最近一次(跨店或本店)有记录的日期，
+//   算相差天数显示"已闲置N天"；如果这个人从来没有任何跨店/本店记录，显示"无历史订座记录"
+function daysBetween(earlierDateStr, laterDateStr) {
+  const a = new Date(earlierDateStr + 'T00:00:00Z');
+  const b = new Date(laterDateStr + 'T00:00:00Z');
+  return Math.round((b - a) / 86400000);
+}
+
+function computeDayStatus(phone, dateStr) {
+  const activity = window.LOCAL_ACTIVITY_DATA;
+  if (!activity) return { text: '未生成数据', kind: 'idle' };
+  const settle = activity.settlement[phone] || [];
+  const book = activity.booking[phone] || [];
+  if (settle.includes(dateStr)) return { text: '跨店预定', kind: 'active' };
+  if (book.includes(dateStr)) return { text: '本店预定', kind: 'active' };
+  let lastDate = null;
+  for (const d of settle) { if (d < dateStr && (!lastDate || d > lastDate)) lastDate = d; }
+  for (const d of book) { if (d < dateStr && (!lastDate || d > lastDate)) lastDate = d; }
+  if (!lastDate) return { text: '无历史订座记录', kind: 'idle' };
+  return { text: `已闲置${daysBetween(lastDate, dateStr)}天`, kind: 'idle' };
 }
 
 // 条形统计：当前筛选出的记录按卡名分组占比，画一条100%堆叠横条，从左到右按数量从多到少排列。
