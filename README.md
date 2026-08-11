@@ -33,15 +33,39 @@
 - **分子**：当天(北京时间)跨店结算**流出方向**(`purchases.js?mode=cross-store-settlement&direction=out`)
   涉及的用户数，按手机号去重——也就是"回兴店卖出的卡，当天在别的门店消费"的人数，这个是精确值不是近似值。
 
+## 锁座用户怎么算的（2026-08-12 加）
+
+看板第三条曲线"锁座用户趋势"，跟"明细数据"表格最后一列"锁座用户"是同一个指标：**当天有"锁座订单"覆盖的
+用户数**（按手机号去重）。
+
+⚠️ **判断口径是订单本身的时间跨度，不是卡种**——跟前面"分母"那节说的"锁座固定座位的卡不算有效"
+完全是两回事，别搞混：那个看的是**这张卡本身是不是锁座卡**（`cardTypeCode === "LONG_TERM"`），
+这个看的是**这一笔订座订单订的时间跨度是不是超过3天**，任何卡种（哪怕是普通天卡/小时卡）只要一笔订单
+跨度超过3天就算一次锁座订单——`lib.js` 的 `isLockedSeatOrder()`：
+
+- 用回兴店全量订座历史（`orders.js`，不是 `purchases.js`），单笔订单 `[startTime日期, endTime日期]`
+  相差**超过3天**（`daysBetweenDates() > 3`）就算锁座订单
+- 已取消的订单（orderStatus 4/9）不算，跟"当日状态"的"本店预定"同一个排除逻辑——取消了不代表真的占用座位
+- 每个用户可能有多笔锁座订单，`buildLockedSeatIntervals()` 按手机号整理出这些订单各自的 `[开始,结束]`
+  区间，某天落在任意一个区间内就算这个用户当天"锁座"，算法上跟"分母"那套区间判断逻辑是同一个套路
+  （`lockedSeatUsersOnDate()` 对应 `denominatorOnDate()`）
+
+⚠️ **这块要多拉一次回兴店全量订座历史（1.6万+条，服务端分页上限100条/页，要拉160+页）才能算**，
+`collect.js` 每天都要多花2~3分钟拉这份数据，比加这个指标之前明显慢了——不影响功能，只是定时任务
+跑起来的耗时变长了，GitHub Actions 单个 job 默认超时6小时，完全够用。
+
 ## 文件结构
 
-- `lib.js`：共享逻辑（拉数据、算分母分子），`collect.js`/`backfill.js` 都靠它
+- `lib.js`：共享逻辑（拉数据、算分母/分子/锁座用户），`collect.js`/`backfill.js` 都靠它
 - `collect.js`：每日结算脚本，算出"前一天"一条记录，追加/覆盖进 `history.json`
 - `backfill.js`：一次性历史回填脚本，见下面单独一节
 - `recompute-denominator.js`：分母算法改了以后，用新口径重新计算 `history.json` 里已有全部记录的分母/跨店率
   （分子不变）。跟 `backfill.js` 不一样——`backfill.js` 只补没有的日期，这个是覆盖已有的日期。
   平时不用跑，只有改了 `lib.js` 分母算法之后才需要跑一次：`FUNC_SHARED_SECRET=xxx node recompute-denominator.js`
-- `history.json`：累积的每日数据 `[{date, numerator, denominator, rate, backfilled?}, ...]`，
+- `recompute-locked-seats.js`：新加指标专用的一次性补算脚本，把 `history.json` 里已有的全部历史记录
+  补上 `lockedSeatUsers` 字段（其他字段不变）。以后再加新指标，照这个套路再写一个新的 recompute 脚本就行，
+  不用改现有的这两个：`FUNC_SHARED_SECRET=xxx node recompute-locked-seats.js`
+- `history.json`：累积的每日数据 `[{date, numerator, denominator, rate, lockedSeatUsers, backfilled?}, ...]`，
   `backfilled: true` 表示这条是回填出来的近似值，不是真实每日结算跑出来的
 - `history.js`：内容跟 `history.json` 完全一样，只是包了一层 `window.HISTORY_DATA = [...]`——
   `index.html` 用 `<script src="./history.js">` 加载数据而不是 `fetch('./history.json')`，

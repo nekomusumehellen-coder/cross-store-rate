@@ -177,6 +177,13 @@ button.toggle.active { background: var(--series-1); color: white; border-color: 
   </div>
 
   <div class="card">
+    <h2>锁座用户趋势</h2>
+    <p class="desc">当天有"锁座订单"覆盖的用户数——锁座订单指单笔订座订单的时间跨度超过3天（不看卡种，
+    普通卡/锁座卡都算，只要一笔订单订的时间够长），已取消的订单不算。鼠标悬停查看具体数值</p>
+    <div id="chartAreaLocked"></div>
+  </div>
+
+  <div class="card">
     <h2>明细数据</h2>
     <div class="scroll-table" id="tableArea"></div>
   </div>
@@ -260,6 +267,7 @@ function render() {
   renderKpis(data);
   renderChart(data);
   renderDenomChart(data);
+  renderLockedChart(data);
   renderTable(data);
 }
 
@@ -563,11 +571,11 @@ function renderTable(data) {
     return;
   }
   const rows = [...data].reverse().map((d) => `
-    <tr><td>${d.date}</td><td class="num">${d.numerator}</td><td class="num">${d.denominator}</td><td class="num">${d.rate}%</td></tr>
+    <tr><td>${d.date}</td><td class="num">${d.numerator}</td><td class="num">${d.denominator}</td><td class="num">${d.rate}%</td><td class="num">${d.lockedSeatUsers ?? '—'}</td></tr>
   `).join('');
   el.innerHTML = `
     <table>
-      <thead><tr><th>日期</th><th class="num">跨店用户数</th><th class="num">有效会员数</th><th class="num">跨店率</th></tr></thead>
+      <thead><tr><th>日期</th><th class="num">跨店用户数</th><th class="num">有效会员数</th><th class="num">跨店率</th><th class="num">锁座用户</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   `;
@@ -605,7 +613,8 @@ function drawLineChart(containerId, data, { valueKey, fmtTick, fmtTooltip, ariaL
 
   const dots = data.map((d, i) => `
     <circle class="dot" cx="${x(i).toFixed(2)}" cy="${y(d[valueKey]).toFixed(2)}" r="4"
-      data-date="${d.date}" data-numerator="${d.numerator}" data-denominator="${d.denominator}" data-rate="${d.rate}"></circle>
+      data-date="${d.date}" data-numerator="${d.numerator}" data-denominator="${d.denominator}" data-rate="${d.rate}"
+      data-locked-seat-users="${d.lockedSeatUsers ?? ''}"></circle>
   `).join('');
 
   chartArea.innerHTML = `
@@ -645,6 +654,19 @@ function renderDenomChart(data) {
     fmtTooltip: ({ date, denominator }) => `<b>${date}</b><br>有效套餐数量 ${denominator}`,
     ariaLabel: '回兴店有效套餐数量趋势',
     niceStep: 10,
+  });
+}
+
+function renderLockedChart(data) {
+  // 老数据没有 lockedSeatUsers 字段（还没跑 recompute-locked-seats.js 补算过）时兜底成0，
+  // 避免 Math.max(...) 算出 NaN 把整张图画坏
+  const normalized = data.map((d) => ({ ...d, lockedSeatUsers: d.lockedSeatUsers ?? 0 }));
+  drawLineChart('chartAreaLocked', normalized, {
+    valueKey: 'lockedSeatUsers',
+    fmtTick: (t) => `${t}`,
+    fmtTooltip: ({ date, lockedSeatUsers }) => `<b>${date}</b><br>锁座用户 ${lockedSeatUsers}`,
+    ariaLabel: '回兴店锁座用户趋势',
+    niceStep: 5,
   });
 }
 

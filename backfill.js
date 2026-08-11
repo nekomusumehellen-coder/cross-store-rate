@@ -4,7 +4,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { beijingDateStr, buildCardIntervals, denominatorOnDate, computeNumeratorForDate, fetchAllPages, STORE, EARLIEST_DATE } = require("./lib.js");
+const { beijingDateStr, buildCardIntervals, denominatorOnDate, computeNumeratorForDate, fetchAllPages, STORE, EARLIEST_DATE, buildLockedSeatIntervals, lockedSeatUsersOnDate } = require("./lib.js");
 
 const HISTORY_JSON_PATH = path.join(__dirname, "history.json");
 const HISTORY_JS_PATH = path.join(__dirname, "history.js");
@@ -50,6 +50,9 @@ async function main() {
   console.log("拉取全部购买+验券记录，重建每张卡的有效区间...");
   const cardsByUser = await buildCardIntervals(todayStr);
 
+  console.log("拉取回兴店全量订座历史，重建每个用户的锁座订单区间...");
+  const lockedByUser = await buildLockedSeatIntervals(todayStr);
+
   console.log("拉取跨店结算(流出方向)历史记录...");
   const settlements = await fetchAllPages({
     mode: "cross-store-settlement",
@@ -73,7 +76,8 @@ async function main() {
     const denominator = denominatorOnDate(cardsByUser, d);
     const numerator = usersByDate[d] ? usersByDate[d].size : 0;
     const rate = denominator > 0 ? Number(((numerator / denominator) * 100).toFixed(2)) : 0;
-    newRecords.push({ date: d, numerator, denominator, rate, backfilled: true });
+    const lockedSeatUsers = lockedSeatUsersOnDate(lockedByUser, d);
+    newRecords.push({ date: d, numerator, denominator, rate, lockedSeatUsers, backfilled: true });
   }
 
   const merged = [...newRecords, ...existing].sort((a, b) => (a.date < b.date ? -1 : 1));

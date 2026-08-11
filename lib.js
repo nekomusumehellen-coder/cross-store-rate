@@ -232,4 +232,59 @@ async function buildActivityDates(untilDateStr) {
   return { settlement: toSortedArray(settlement), booking: toSortedArray(booking) };
 }
 
-module.exports = { STORE, EARLIEST_DATE, beijingDateStr, fetchAllPages, fetchAllOrders, buildCardIntervals, buildCardRecords, buildActivityDates, denominatorOnDate, computeNumeratorForDate };
+// 2026-08-12 用户要求加"锁座用户"指标+趋势图，**判断口径是订单本身的时间跨度，不是卡种**——
+// 跟之前 isExcludedFromValid() 里"锁座卡"(cardTypeCode=LONG_TERM)完全是两回事，别搞混：
+// 那个是"这张卡本身是不是锁座卡"，这个是"这一笔订单订的时间跨度是不是超过3天"，任何卡种
+// （哪怕是普通天卡/小时卡）只要一笔订单跨度超过3天就算一次锁座订单。
+// 判断规则（用户口径）：单个订单 [startTime日期, endTime日期] 相差 > 3天算锁座订单，
+// 已取消的订单(orderStatus 4/9)不算（跟"当日状态"的本店预定同一个排除逻辑，取消了不算真实占用）。
+function isLockedSeatOrder(r) {
+  const CANCELLED = new Set(["4", "9"]);
+  if (!r.userPhone || !r.startTime || !r.endTime) return false;
+  if (CANCELLED.has(String(r.orderStatus))) return false;
+  const start = r.startTime.slice(0, 10);
+  const end = r.endTime.slice(0, 10);
+  return daysBetweenDates(start, end) > 3;
+}
+
+function daysBetweenDates(startDateStr, endDateStr) {
+  const a = new Date(startDateStr + "T00:00:00Z");
+  const b = new Date(endDateStr + "T00:00:00Z");
+  return Math.round((b - a) / 86400000);
+}
+
+// 拉回兴店全量订座历史（截止到 untilDateStr），挑出锁座订单(见 isLockedSeatOrder)，
+// 按手机号整理出每个用户名下所有锁座订单的 [开始,结束] 区间——跟 buildCardIntervals 一个套路，
+// 供"锁座用户"每日趋势用。同一个用户可能有多笔锁座订单，区间数组允许重叠/相邻。
+async function buildLockedSeatIntervals(untilDateStr) {
+  const bookingRows = await fetchAllOrders({
+    store: STORE,
+    studyBeginTime: EARLIEST_DATE,
+    studyEndTime: untilDateStr,
+  });
+  const lockedByUser = {};
+  let lockedCount = 0;
+  for (const r of bookingRows) {
+    if (!isLockedSeatOrder(r)) continue;
+    lockedCount++;
+    const start = r.startTime.slice(0, 10);
+    const end = r.endTime.slice(0, 10);
+    (lockedByUser[r.userPhone] ||= []).push([start, end]);
+  }
+  console.log(`锁座用户数据源：本店订座 ${bookingRows.length} 条，其中 ${lockedCount} 条订单跨度超过3天算锁座订单，涉及 ${Object.keys(lockedByUser).length} 个不同用户`);
+  return lockedByUser;
+}
+
+function lockedSeatUsersOnDate(lockedByUser, dateStr) {
+  let count = 0;
+  for (const phone of Object.keys(lockedByUser)) {
+    if (lockedByUser[phone].some(([s, e]) => s <= dateStr && dateStr <= e)) count++;
+  }
+  return count;
+}
+
+module.exports = {
+  STORE, EARLIEST_DATE, beijingDateStr, fetchAllPages, fetchAllOrders,
+  buildCardIntervals, buildCardRecords, buildActivityDates, denominatorOnDate, computeNumeratorForDate,
+  buildLockedSeatIntervals, lockedSeatUsersOnDate, isLockedSeatOrder,
+};
