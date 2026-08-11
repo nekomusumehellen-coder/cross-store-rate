@@ -325,6 +325,7 @@ function initUserDetailCard() {
     <p class="desc" style="margin-top:4px;">这行是"当日状态"的占比：绿色=本店预定，红色=跨店预定，灰色=闲置
     （含"已闲置N天"和"无历史订座记录"）。点击色块同样可以筛选下方表格，可以跟上面的卡种筛选叠加一起用</p>
     <div id="statusCompArea"></div>
+    <div id="statusCardCompWrap"></div>
     <div class="scroll-table" id="detailTableArea"></div>
   `;
   document.getElementById('detailDate').addEventListener('change', renderUserDetail);
@@ -356,6 +357,21 @@ function renderUserDetail() {
   // 这样切换选中项的时候，两边都能一直看到完整的占比分布做对比
   renderCardComposition(filtered);
   renderStatusComposition(withStatus);
+
+  // 点了"当日状态"的某个色块之后，在它下面再多一条"这个状态筛选下的卡种占比"条形统计——
+  // 跟最上面那条卡种条形统计不一样，这条是限定在选中状态范围内的，帮助看"闲置的人主要是哪些卡种"
+  // 这种问题。这条也是点色块筛选表格，用的是同一个 selectedCardName，两条卡种条形统计联动。
+  const statusCardWrap = document.getElementById('statusCardCompWrap');
+  if (selectedStatusKind) {
+    const withinStatus = withStatus.filter((e) => e.status.kind === selectedStatusKind).map((e) => e.r);
+    statusCardWrap.innerHTML = `
+      <p class="desc" style="margin-top:4px;">"${STATUS_KIND_META[selectedStatusKind].label}"这个状态下，卡种占比：</p>
+      <div id="statusCardCompArea"></div>
+    `;
+    renderCardComposition(withinStatus, 'statusCardCompArea', 'statusCard');
+  } else {
+    statusCardWrap.innerHTML = '';
+  }
 
   // 表格 + KPI 在此基础上叠加"选中的卡种"+"选中的当日状态"两个筛选（可以同时生效）
   let tableEntries = withStatus;
@@ -486,7 +502,11 @@ function renderCompositionBar(containerId, items, selectedKey, onToggle, ariaLab
   if (clearBtn) clearBtn.addEventListener('click', () => onToggle(selectedKey)); // 再传一次同一个key等于toggle掉
 }
 
-function renderCardComposition(filtered) {
+// containerId/idPrefix 有默认值，正常场景（最上面那条全量卡种条形统计）不用传；
+// 点了当日状态色块之后额外冒出来的"这个状态下的卡种占比"那条会传 'statusCardCompArea'/'statusCard'
+// 复用同一份逻辑，避免两条卡种条形统计各写一遍——两条共用同一个 selectedCardName，点哪条的色块都行，
+// 状态互相同步。
+function renderCardComposition(filtered, containerId, idPrefix) {
   const counts = {};
   for (const r of filtered) {
     const name = r.cardName || '(未命名)';
@@ -495,10 +515,10 @@ function renderCardComposition(filtered) {
   const items = Object.keys(counts).map((name) => ({
     key: name, label: name, count: counts[name], color: cardColorMap[name] || 'var(--cat-1)',
   }));
-  renderCompositionBar('compArea', items, selectedCardName, (key) => {
+  renderCompositionBar(containerId || 'compArea', items, selectedCardName, (key) => {
     selectedCardName = selectedCardName === key ? null : key;
     renderUserDetail();
-  }, '有效套餐按卡种占比，点击色块可筛选下方表格', 'card');
+  }, '有效套餐按卡种占比，点击色块可筛选下方表格', idPrefix || 'card');
 }
 
 // 当日状态三色固定：本店预定=绿，跨店预定=红，闲置=灰（"已闲置N天"+"无历史订座记录"归一类）
