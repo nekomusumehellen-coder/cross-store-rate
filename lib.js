@@ -192,12 +192,20 @@ async function fetchAllOrders(paramsBase, onProgress) {
   return all;
 }
 
+// 拉一次回兴店全量订座历史，给需要用到订座原始数据的几个函数共用（当日状态/锁座订单明细都要用
+// 到同一份 orders.js 数据，2026-08-12 发现 gen-local-detail.js 两边各自独立 fetchAllOrders 一次，
+// 平白多等了一次~2分钟的全量拉取，改成外部拉一次、传下去用）。
+async function fetchStoreOrders(untilDateStr) {
+  return fetchAllOrders({ store: STORE, studyBeginTime: EARLIEST_DATE, studyEndTime: untilDateStr });
+}
+
 // 2026-08-11 用户要求：明细表格要加一列"当日状态"，需要拿两份额外数据按手机号整理成
 // "这个人哪几天有活动"的日期集合——供 gen-local-detail.js 生成本地数据文件时调用。
 // - settlement：跨店结算(流出方向)记录，`startTime` 是这个人当天在别的门店消费的日期
 // - booking：回兴店本店的订座记录，`startTime` 是订的那天，**排除已取消的**（orderStatus
 //   "4"=已取消、"9"=未到店取消——这两种不代表真的有到店/有效预约，不该算"有活动"）
-async function buildActivityDates(untilDateStr) {
+// bookingRows 可选传入（复用 fetchStoreOrders 已经拉好的数据），不传就自己拉一次。
+async function buildActivityDates(untilDateStr, bookingRows) {
   const rangeParams = { startTime: `${EARLIEST_DATE} 00:00:00`, endTime: `${untilDateStr} 23:59:59` };
   const settlementRows = await fetchAllPages({
     mode: "cross-store-settlement",
@@ -205,11 +213,7 @@ async function buildActivityDates(untilDateStr) {
     direction: "out",
     ...rangeParams,
   });
-  const bookingRows = await fetchAllOrders({
-    store: STORE,
-    studyBeginTime: EARLIEST_DATE,
-    studyEndTime: untilDateStr,
-  });
+  const rows = bookingRows || (await fetchStoreOrders(untilDateStr));
 
   const settlement = {};
   for (const r of settlementRows) {
@@ -218,7 +222,7 @@ async function buildActivityDates(untilDateStr) {
   }
   const booking = {};
   const CANCELLED = new Set(["4", "9"]);
-  for (const r of bookingRows) {
+  for (const r of rows) {
     if (!r.userPhone || !r.startTime) continue;
     if (CANCELLED.has(String(r.orderStatus))) continue;
     (booking[r.userPhone] ||= new Set()).add(r.startTime.slice(0, 10));
@@ -228,7 +232,7 @@ async function buildActivityDates(untilDateStr) {
     for (const phone of Object.keys(obj)) out[phone] = [...obj[phone]].sort();
     return out;
   };
-  console.log(`当日状态数据源：跨店结算 ${settlementRows.length} 条(${Object.keys(settlement).length}人) + 本店订座 ${bookingRows.length} 条(排除已取消后 ${Object.keys(booking).length}人)`);
+  console.log(`当日状态数据源：跨店结算 ${settlementRows.length} 条(${Object.keys(settlement).length}人) + 本店订座 ${rows.length} 条(排除已取消后 ${Object.keys(booking).length}人)`);
   return { settlement: toSortedArray(settlement), booking: toSortedArray(booking) };
 }
 
@@ -253,25 +257,54 @@ function daysBetweenDates(startDateStr, endDateStr) {
   return Math.round((b - a) / 86400000);
 }
 
+// 2026-08-12：区分锁座订单是"代客下单"还是"小程序自己下单"，靠 paymentMethod 字段（订单的支付方式，
+// booking-fn 的 orders.js 原样透传上游数值代码，没有官方文档说明每个代码具体含义）。
+// ⚠️ 判断依据是真实抓到的证据，不是猜的：这个会话里用 book.js（代客下单接口，POST
+// help_user_order/help_user_order）实际下的单子，查回来 paymentMethod 全部是 "6"；同一个用户更早
+// 自己在小程序上订的单子是 "9"。锁座订单里 paymentMethod 只出现过 "6"（66条）和 "8"（17条）两种，
+// 从没出现过普通订单常见的 "9"/"3"/"4"/"5"——"8" 目前没有单独验证过，但只出现在锁座订单里、
+// 行为特征（payAmt常为0、不是小程序自助支付）跟"6"高度相似，一并归进"代客下单/线下结算"这一类，
+// 对应用户说的"支付方式里面有线下结算"。以后如果发现锁座订单出现"6"/"8"之外的新代码，要重新核实。
+const OFFLINE_PAYMENT_METHODS = new Set(["6", "8"]);
+
+function classifyLockedOrderBookingType(paymentMethod) {
+  return OFFLINE_PAYMENT_METHODS.has(String(paymentMethod)) ? "代客下单锁座" : "小程序下单锁座";
+}
+
 // 拉回兴店全量订座历史（截止到 untilDateStr），挑出锁座订单(见 isLockedSeatOrder)，
-// 按手机号整理出每个用户名下所有锁座订单的 [开始,结束] 区间——跟 buildCardIntervals 一个套路，
-// 供"锁座用户"每日趋势用。同一个用户可能有多笔锁座订单，区间数组允许重叠/相邻。
-async function buildLockedSeatIntervals(untilDateStr) {
-  const bookingRows = await fetchAllOrders({
-    store: STORE,
-    studyBeginTime: EARLIEST_DATE,
-    studyEndTime: untilDateStr,
-  });
-  const lockedByUser = {};
-  let lockedCount = 0;
-  for (const r of bookingRows) {
+// 保留每笔订单的手机号/昵称/座位号/时间区间/支付方式/预定方式——供本地"锁座订单明细"工具用
+// （含手机号，不能进公开仓库/看板）。bookingRows 可选传入（复用已经拉好的数据），不传就自己拉一次。
+async function buildLockedSeatOrderRecords(untilDateStr, bookingRows) {
+  const rows = bookingRows || (await fetchStoreOrders(untilDateStr));
+  const records = [];
+  for (const r of rows) {
     if (!isLockedSeatOrder(r)) continue;
-    lockedCount++;
     const start = r.startTime.slice(0, 10);
     const end = r.endTime.slice(0, 10);
-    (lockedByUser[r.userPhone] ||= []).push([start, end]);
+    records.push({
+      phone: r.userPhone,
+      nickName: r.userNickName || "",
+      seatName: r.seatName || "",
+      start,
+      end,
+      spanDays: daysBetweenDates(start, end),
+      paymentMethod: r.paymentMethod,
+      bookingType: classifyLockedOrderBookingType(r.paymentMethod),
+    });
   }
-  console.log(`锁座用户数据源：本店订座 ${bookingRows.length} 条，其中 ${lockedCount} 条订单跨度超过3天算锁座订单，涉及 ${Object.keys(lockedByUser).length} 个不同用户`);
+  console.log(`锁座订单数据源：本店订座 ${rows.length} 条，其中 ${records.length} 条订单跨度超过3天算锁座订单`);
+  return records;
+}
+
+// 跟 buildLockedSeatOrderRecords 拉的是同一份数据，但精简成"按手机号整理出 [开始,结束] 区间数组"，
+// 跟 buildCardIntervals 一个套路，供公开看板"锁座用户"每日趋势用（只有聚合数字，不含PII）。
+// 同一个用户可能有多笔锁座订单，区间数组允许重叠/相邻。
+async function buildLockedSeatIntervals(untilDateStr) {
+  const records = await buildLockedSeatOrderRecords(untilDateStr);
+  const lockedByUser = {};
+  for (const r of records) {
+    (lockedByUser[r.phone] ||= []).push([r.start, r.end]);
+  }
   return lockedByUser;
 }
 
@@ -284,7 +317,7 @@ function lockedSeatUsersOnDate(lockedByUser, dateStr) {
 }
 
 module.exports = {
-  STORE, EARLIEST_DATE, beijingDateStr, fetchAllPages, fetchAllOrders,
+  STORE, EARLIEST_DATE, beijingDateStr, fetchAllPages, fetchAllOrders, fetchStoreOrders,
   buildCardIntervals, buildCardRecords, buildActivityDates, denominatorOnDate, computeNumeratorForDate,
-  buildLockedSeatIntervals, lockedSeatUsersOnDate, isLockedSeatOrder,
+  buildLockedSeatIntervals, buildLockedSeatOrderRecords, lockedSeatUsersOnDate, isLockedSeatOrder,
 };

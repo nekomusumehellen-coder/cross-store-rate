@@ -27,6 +27,9 @@
   --status-store: var(--cat-3);
   --status-cross: var(--cat-8);
   --status-idle: var(--cat-other);
+  /* 锁座订单预定方式两色：代客下单锁座=紫，小程序下单锁座=蓝——避开跟当日状态的绿/红/灰撞色 */
+  --booking-offline: var(--cat-7);
+  --booking-online: var(--cat-1);
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme="light"])) {
@@ -128,6 +131,8 @@ button.toggle.active { background: var(--series-1); color: white; border-color: 
 .tag-store { background: color-mix(in srgb, var(--status-store) 25%, var(--surface-1)); color: var(--status-store); font-weight: 600; }
 .tag-cross { background: color-mix(in srgb, var(--status-cross) 25%, var(--surface-1)); color: var(--status-cross); font-weight: 600; }
 .tag-idle { background: var(--gridline); color: var(--text-muted); }
+.tag-offline { background: color-mix(in srgb, var(--booking-offline) 25%, var(--surface-1)); color: var(--booking-offline); font-weight: 600; }
+.tag-online { background: color-mix(in srgb, var(--booking-online) 25%, var(--surface-1)); color: var(--booking-online); font-weight: 600; }
 /* 卡种分类色行底纹 + 占比条形统计 */
 .card-row { background-color: color-mix(in srgb, var(--row-color, var(--cat-other)) 16%, var(--surface-1)); }
 .card-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--row-color, var(--cat-other)); vertical-align: middle; }
@@ -191,6 +196,11 @@ button.toggle.active { background: var(--series-1); color: white; border-color: 
   <div class="card" id="userDetailCard">
     <h2>有效套餐用户明细（本地专用，含手机号）</h2>
     <div id="userDetailBody"></div>
+  </div>
+
+  <div class="card" id="lockedOrderCard">
+    <h2>锁座订单明细（本地专用，含手机号）</h2>
+    <div id="lockedOrderBody"></div>
   </div>
 
   <div class="tooltip" id="tt"></div>
@@ -670,8 +680,115 @@ function renderLockedChart(data) {
   });
 }
 
+// ---- 锁座订单明细（本地专用）----
+// 单笔订座订单跨度超过3天算锁座订单（不看卡种），数据来自 gen-local-detail.js 生成的
+// window.LOCAL_LOCKED_ORDERS（含手机号，本地专用，不进公开仓库）。判定"代客下单锁座"还是
+// "小程序下单锁座"用的是订单的 paymentMethod 字段，具体判定依据见 lib.js 的 classifyLockedOrderBookingType()
+// 注释——这块本身是靠真实抓包验证过的，不是瞎猜的。
+let lockedOrderMask = true;
+let selectedBookingType = null; // 点了预定方式条形统计的色块时选中的类型，筛选下方表格
+
+function initLockedOrderCard() {
+  const body = document.getElementById('lockedOrderBody');
+  const orders = window.LOCAL_LOCKED_ORDERS;
+  if (!orders) {
+    body.innerHTML = `
+      <p class="desc">本地未生成数据——线上看板不含这块内容，只有本地跑过生成脚本才能看到。</p>
+      <div class="warn">在 <code>cross-store-rate</code> 目录下跑：<code>FUNC_SHARED_SECRET=xxx node gen-local-detail.js</code>，
+      跑完刷新这个页面即可看到明细（生成的数据文件 <code>local-detail-data.js</code> 只存在本地，不会被提交/公开）。</div>
+    `;
+    return;
+  }
+  const genDate = window.LOCAL_DETAIL_GENERATED_AT || '未知日期';
+  body.innerHTML = `
+    <div class="warn">⚠️ 这块含真实客户手机号，只在本地看，别截图/公开分享——数据生成于 ${genDate}，共 ${orders.length} 条锁座订单
+    （单笔订座订单时间跨度超过3天，已取消的订单不算）。</div>
+    <p class="desc">"预定方式"根据订单支付方式字段判断：支付方式是"6"/"8"（实测都是线下结算/代客下单相关）
+    算"代客下单锁座"，其他算"小程序下单锁座"——这个判断依据是真实抓包验证过的，见 <code>lib.js</code> 注释。</p>
+    <div class="detail-controls">
+      <label>手机号/昵称/座位号筛选 <input type="text" id="lockedSearch" placeholder="模糊搜索" /></label>
+      <button class="toggle active" id="lockedMaskBtn">手机号已打码</button>
+    </div>
+    <div class="kpi-row" id="lockedKpiRow" style="grid-template-columns: repeat(2, 1fr); max-width: 480px;"></div>
+    <p class="desc" style="margin-top:4px;">下面是预定方式的占比，点击色块可以筛选下方表格</p>
+    <div id="lockedCompArea"></div>
+    <div class="scroll-table" id="lockedTableArea"></div>
+  `;
+  document.getElementById('lockedSearch').addEventListener('input', renderLockedOrders);
+  const maskBtn = document.getElementById('lockedMaskBtn');
+  maskBtn.addEventListener('click', () => {
+    lockedOrderMask = !lockedOrderMask;
+    maskBtn.textContent = lockedOrderMask ? '手机号已打码' : '手机号明文';
+    maskBtn.classList.toggle('active', lockedOrderMask);
+    renderLockedOrders();
+  });
+  renderLockedOrders();
+}
+
+const BOOKING_TYPE_META = {
+  '代客下单锁座': { color: 'var(--booking-offline)', tagClass: 'tag-offline' },
+  '小程序下单锁座': { color: 'var(--booking-online)', tagClass: 'tag-online' },
+};
+
+function renderLockedOrders() {
+  const orders = window.LOCAL_LOCKED_ORDERS;
+  if (!orders) return;
+  const q = document.getElementById('lockedSearch').value.trim().toLowerCase();
+  const filtered = q
+    ? orders.filter((r) => (r.phone || '').includes(q) || (r.nickName || '').toLowerCase().includes(q) || String(r.seatName || '').toLowerCase().includes(q))
+    : orders;
+
+  // 预定方式占比始终基于搜索筛选，不受"点色块选中类型"影响
+  const typeCounts = {};
+  for (const r of filtered) typeCounts[r.bookingType] = (typeCounts[r.bookingType] || 0) + 1;
+  const compItems = Object.keys(typeCounts).map((type) => ({
+    key: type, label: type, count: typeCounts[type], color: BOOKING_TYPE_META[type].color,
+  }));
+  renderCompositionBar('lockedCompArea', compItems, selectedBookingType, (key) => {
+    selectedBookingType = selectedBookingType === key ? null : key;
+    renderLockedOrders();
+  }, '锁座订单按预定方式占比，点击色块可筛选下方表格', 'locked');
+
+  const tableRows = selectedBookingType ? filtered.filter((r) => r.bookingType === selectedBookingType) : filtered;
+  const uniqueUsers = new Set(tableRows.map((r) => r.phone)).size;
+
+  document.getElementById('lockedKpiRow').innerHTML = `
+    <div class="kpi"><div class="kpi-label">锁座订单数${selectedBookingType ? '（已筛选）' : ''}</div><div class="kpi-value">${tableRows.length}</div></div>
+    <div class="kpi"><div class="kpi-label">涉及用户数(去重)</div><div class="kpi-value">${uniqueUsers}</div></div>
+  `;
+
+  const el = document.getElementById('lockedTableArea');
+  if (!tableRows.length) {
+    el.innerHTML = '<div class="empty">这个条件下没有数据</div>';
+    return;
+  }
+  const sorted = [...tableRows].sort((a, b) => (a.start > b.start ? -1 : 1)); // 最近开始的排前面
+  const rows = sorted.map((r) => {
+    const meta = BOOKING_TYPE_META[r.bookingType];
+    return `
+    <tr>
+      <td>${lockedOrderMask ? maskPhone(r.phone) : r.phone}</td>
+      <td>${r.nickName || ''}</td>
+      <td class="num">${r.seatName || ''}</td>
+      <td class="num">${r.start}</td>
+      <td class="num">${r.end}</td>
+      <td class="num">${r.spanDays}天</td>
+      <td class="num">${r.paymentMethod ?? ''}</td>
+      <td><span class="tag ${meta.tagClass}">${r.bookingType}</span></td>
+    </tr>
+  `;
+  }).join('');
+  el.innerHTML = `
+    <table>
+      <thead><tr><th>手机号</th><th>昵称</th><th class="num">座位号</th><th class="num">开始日期</th><th class="num">结束日期</th><th class="num">跨度</th><th class="num">支付方式</th><th>预定方式</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
 loadData();
 initUserDetailCard();
+initLockedOrderCard();
 </script>
 </body>
 </html>
