@@ -23,6 +23,10 @@
   --cat-1: #2a78d6; --cat-2: #eb6834; --cat-3: #1baf7a; --cat-4: #eda100;
   --cat-5: #e87ba4; --cat-6: #008300; --cat-7: #4a3aa7; --cat-8: #e34948;
   --cat-other: #898781;
+  /* 当日状态三色：本店预定=绿，跨店预定=红，闲置=灰——直接复用分类色板里的绿/红/其他灰槽位 */
+  --status-store: var(--cat-3);
+  --status-cross: var(--cat-8);
+  --status-idle: var(--cat-other);
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme="light"])) {
@@ -121,7 +125,8 @@ button.toggle {
 }
 button.toggle.active { background: var(--series-1); color: white; border-color: var(--series-1); }
 .tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--gridline); color: var(--text-secondary); }
-.tag-active { background: color-mix(in srgb, var(--cat-3) 25%, var(--surface-1)); color: var(--cat-3); font-weight: 600; }
+.tag-store { background: color-mix(in srgb, var(--status-store) 25%, var(--surface-1)); color: var(--status-store); font-weight: 600; }
+.tag-cross { background: color-mix(in srgb, var(--status-cross) 25%, var(--surface-1)); color: var(--status-cross); font-weight: 600; }
 .tag-idle { background: var(--gridline); color: var(--text-muted); }
 /* 卡种分类色行底纹 + 占比条形统计 */
 .card-row { background-color: color-mix(in srgb, var(--row-color, var(--cat-other)) 16%, var(--surface-1)); }
@@ -262,7 +267,8 @@ function render() {
 const maskPhone = (p) => (p && p.length >= 7) ? p.slice(0, 3) + '****' + p.slice(-4) : (p || '');
 let userDetailMask = true;
 let cardColorMap = {}; // cardName -> 颜色（前8名用 var(--cat-1..8)，第9名开始用程序生成的备用色，不折叠进"其他"）
-let selectedCardName = null; // 点了条形统计某个色块时选中的卡名，用来筛选下方表格；再点一次/点×清空
+let selectedCardName = null; // 点了卡种条形统计某个色块时选中的卡名，用来筛选下方表格；再点一次/点×清空
+let selectedStatusKind = null; // 点了当日状态条形统计某个色块时选中的状态('store'/'cross'/'idle')，可以跟卡种筛选叠加
 
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -316,6 +322,9 @@ function initUserDetailCard() {
     从左到右按数量从多到少排列，颜色跟明细表格每行的底色是同一套，直线指向对应的卡名和具体数量；
     点击某个色块可以筛选出该卡种的用户明细，再点一次/点筛选条上的×取消筛选</p>
     <div id="compArea"></div>
+    <p class="desc" style="margin-top:4px;">这行是"当日状态"的占比：绿色=本店预定，红色=跨店预定，灰色=闲置
+    （含"已闲置N天"和"无历史订座记录"）。点击色块同样可以筛选下方表格，可以跟上面的卡种筛选叠加一起用</p>
+    <div id="statusCompArea"></div>
     <div class="scroll-table" id="detailTableArea"></div>
   `;
   document.getElementById('detailDate').addEventListener('change', renderUserDetail);
@@ -340,31 +349,34 @@ function renderUserDetail() {
   const filtered = q
     ? validToday.filter((r) => (r.phone || '').includes(q) || (r.nickName || '').toLowerCase().includes(q))
     : validToday;
+  // 每条记录当日状态只算一次，卡种条形统计/当日状态条形统计/表格三处共用，不用重复算
+  const withStatus = filtered.map((r) => ({ r, status: dateStr ? computeDayStatus(r.phone, dateStr) : { text: '—', kind: 'idle' } }));
 
-  // 条形统计始终基于"查看日期+搜索"这两个筛选，不受"点色块选中的卡种"影响——
-  // 这样点别的色块切换选中卡种时，能一直看到完整的占比分布做对比
+  // 两条条形统计都始终基于"查看日期+搜索"这两个筛选，不受"点色块选中的卡种/当日状态"影响——
+  // 这样切换选中项的时候，两边都能一直看到完整的占比分布做对比
   renderCardComposition(filtered);
+  renderStatusComposition(withStatus);
 
-  // 表格 + KPI 在此基础上再叠加"选中的卡种"筛选
-  const tableRows = selectedCardName
-    ? filtered.filter((r) => (r.cardName || '(未命名)') === selectedCardName)
-    : filtered;
-  const uniqueUsers = new Set(tableRows.map((r) => r.phone)).size;
+  // 表格 + KPI 在此基础上叠加"选中的卡种"+"选中的当日状态"两个筛选（可以同时生效）
+  let tableEntries = withStatus;
+  if (selectedCardName) tableEntries = tableEntries.filter((e) => (e.r.cardName || '(未命名)') === selectedCardName);
+  if (selectedStatusKind) tableEntries = tableEntries.filter((e) => e.status.kind === selectedStatusKind);
+  const uniqueUsers = new Set(tableEntries.map((e) => e.r.phone)).size;
+  const filterNote = (selectedCardName || selectedStatusKind) ? '（已筛选）' : '';
 
   document.getElementById('detailKpiRow').innerHTML = `
-    <div class="kpi"><div class="kpi-label">${dateStr || '全部'} 有效套餐记录数${selectedCardName ? '（已按卡种筛选）' : ''}</div><div class="kpi-value">${tableRows.length}</div></div>
+    <div class="kpi"><div class="kpi-label">${dateStr || '全部'} 有效套餐记录数${filterNote}</div><div class="kpi-value">${tableEntries.length}</div></div>
     <div class="kpi"><div class="kpi-label">涉及用户数(去重)</div><div class="kpi-value">${uniqueUsers}</div></div>
   `;
 
   const el = document.getElementById('detailTableArea');
-  if (!tableRows.length) {
+  if (!tableEntries.length) {
     el.innerHTML = '<div class="empty">这个条件下没有数据</div>';
     return;
   }
-  const sorted = [...tableRows].sort((a, b) => (a.phone < b.phone ? -1 : a.phone > b.phone ? 1 : (a.start < b.start ? -1 : 1)));
-  const rows = sorted.map((r) => {
+  const sorted = [...tableEntries].sort((a, b) => (a.r.phone < b.r.phone ? -1 : a.r.phone > b.r.phone ? 1 : (a.r.start < b.r.start ? -1 : 1)));
+  const rows = sorted.map(({ r, status }) => {
     const color = cardColorMap[r.cardName || '(未命名)'] || 'var(--cat-1)';
-    const status = dateStr ? computeDayStatus(r.phone, dateStr) : { text: '—', kind: 'idle' };
     return `
     <tr class="card-row" style="--row-color: ${color}">
       <td>${userDetailMask ? maskPhone(r.phone) : r.phone}</td>
@@ -397,13 +409,15 @@ function daysBetween(earlierDateStr, laterDateStr) {
   return Math.round((b - a) / 86400000);
 }
 
+// kind 只有三种取值，对应当日状态条形统计的三个固定色块：
+// 'store'(本店预定,绿) / 'cross'(跨店预定,红) / 'idle'(闲置,灰——包含"已闲置N天"和"无历史订座记录")
 function computeDayStatus(phone, dateStr) {
   const activity = window.LOCAL_ACTIVITY_DATA;
   if (!activity) return { text: '未生成数据', kind: 'idle' };
   const settle = activity.settlement[phone] || [];
   const book = activity.booking[phone] || [];
-  if (settle.includes(dateStr)) return { text: '跨店预定', kind: 'active' };
-  if (book.includes(dateStr)) return { text: '本店预定', kind: 'active' };
+  if (settle.includes(dateStr)) return { text: '跨店预定', kind: 'cross' };
+  if (book.includes(dateStr)) return { text: '本店预定', kind: 'store' };
   let lastDate = null;
   for (const d of settle) { if (d < dateStr && (!lastDate || d > lastDate)) lastDate = d; }
   for (const d of book) { if (d < dateStr && (!lastDate || d > lastDate)) lastDate = d; }
@@ -411,73 +425,99 @@ function computeDayStatus(phone, dateStr) {
   return { text: `已闲置${daysBetween(lastDate, dateStr)}天`, kind: 'idle' };
 }
 
-// 条形统计：当前筛选出的记录按卡名分组占比，画一条100%堆叠横条，从左到右按数量从多到少排列。
-// 百分比写在每个色块中间，色块下方拉一根线（长短交替错开，避免窄色块的标签挤在一起）指到"卡名 (数量)"。
-// 所有卡名都单独展示、单独一个颜色，不折叠成"其他"。点色块可以筛选下方表格，再点一次取消。
-function renderCardComposition(filtered) {
-  const el = document.getElementById('compArea');
-  if (!filtered.length) {
+// 通用的"占比条形统计"绘制函数：items = [{key, label, count, color}]，画一条100%堆叠横条，
+// 从左到右按数量从多到少排列，百分比写在色块中间（太窄放不下就不硬塞），色块下方拉一根线
+// （长短交替错开，避免窄色块的标签挤在一起）指到"标签 (数量)"。点色块回调 onToggle(key) 去
+// 切换筛选，再点一次同一个色块/点筛选条上的×取消。containerId 是挂载点 id，selectedKey 是
+// 当前选中的 key（未选中传 null），idPrefix 用来生成不重复的清除按钮 id（同一页有两条条形统计）。
+function renderCompositionBar(containerId, items, selectedKey, onToggle, ariaLabel, idPrefix) {
+  const el = document.getElementById(containerId);
+  if (!items.length) {
     el.innerHTML = '';
     return;
   }
-  const counts = {};
-  for (const r of filtered) {
-    const name = r.cardName || '(未命名)';
-    counts[name] = (counts[name] || 0) + 1;
-  }
-  const segments = Object.keys(counts)
-    .map((name) => ({ name, count: counts[name], color: cardColorMap[name] || 'var(--cat-1)' }))
-    .sort((a, b) => b.count - a.count); // 从多到少
-  const total = filtered.length;
+  const sorted = [...items].sort((a, b) => b.count - a.count); // 从多到少
+  const total = sorted.reduce((s, it) => s + it.count, 0);
 
-  const W = 1000, gap = 4, n = segments.length;
+  const W = 1000, gap = 4, n = sorted.length;
   const totalGap = gap * Math.max(0, n - 1);
   const usableW = W - totalGap;
   let cursorX = 0;
   const barY = 10, barH = 32;
-  const items = [];
-  segments.forEach((seg, i) => {
-    const w = (seg.count / total) * usableW;
+  const groups = [];
+  sorted.forEach((it, i) => {
+    const w = (it.count / total) * usableW;
     const cx = cursorX + w / 2;
-    const pct = Math.round((seg.count / total) * 1000) / 10;
+    const pct = Math.round((it.count / total) * 1000) / 10;
     const tier = i % 2; // 长短交替错开标签，减少窄色块标签互相重叠
     const lineEndY = tier === 0 ? barY + barH + 14 : barY + barH + 34;
     const labelY = lineEndY + 13;
     const showInlinePct = w > 42; // 色块太窄放不下百分比文字就不硬塞
-    const isSelected = selectedCardName === seg.name;
-    items.push(`
-      <g class="comp-item${isSelected ? ' selected' : ''}" data-card="${escapeHtml(seg.name)}" role="button" tabindex="0" aria-label="筛选卡种：${escapeHtml(seg.name)}">
-        <rect class="comp-seg" x="${cursorX.toFixed(2)}" y="${barY}" width="${Math.max(w, 0).toFixed(2)}" height="${barH}" rx="3" fill="${seg.color}"></rect>
+    const isSelected = selectedKey === it.key;
+    groups.push(`
+      <g class="comp-item${isSelected ? ' selected' : ''}" data-key="${escapeHtml(it.key)}" role="button" tabindex="0" aria-label="筛选：${escapeHtml(it.label)}">
+        <rect class="comp-seg" x="${cursorX.toFixed(2)}" y="${barY}" width="${Math.max(w, 0).toFixed(2)}" height="${barH}" rx="3" fill="${it.color}"></rect>
         ${showInlinePct ? `<text class="comp-pct" x="${cx.toFixed(2)}" y="${(barY + barH / 2 + 4).toFixed(2)}" text-anchor="middle">${pct}%</text>` : ''}
         <line class="comp-leader" x1="${cx.toFixed(2)}" y1="${barY + barH}" x2="${cx.toFixed(2)}" y2="${lineEndY}"></line>
-        <circle cx="${cx.toFixed(2)}" cy="${lineEndY}" r="3" fill="${seg.color}"></circle>
+        <circle cx="${cx.toFixed(2)}" cy="${lineEndY}" r="3" fill="${it.color}"></circle>
         <text class="comp-label" x="${cx.toFixed(2)}" y="${labelY}" text-anchor="middle">
-          <tspan class="name">${escapeHtml(seg.name)}</tspan> <tspan>(${seg.count})</tspan>
+          <tspan class="name">${escapeHtml(it.label)}</tspan> <tspan>(${it.count})</tspan>
         </text>
       </g>
     `);
     cursorX += w + gap;
   });
 
+  const clearBtnId = `${idPrefix}ClearFilter`;
   el.innerHTML = `
-    <svg viewBox="0 0 ${W} 110" class="comp-legend-svg" role="img" aria-label="有效套餐按卡种占比，点击色块可筛选下方表格">
-      ${items.join('')}
+    <svg viewBox="0 0 ${W} 110" class="comp-legend-svg" role="img" aria-label="${ariaLabel}">
+      ${groups.join('')}
     </svg>
-    ${selectedCardName ? `<div class="filter-chip">筛选中：${escapeHtml(selectedCardName)} <button id="clearCardFilter" aria-label="清除筛选">×</button></div>` : ''}
+    ${selectedKey ? `<div class="filter-chip">筛选中：${escapeHtml(sorted.find((it) => it.key === selectedKey).label)} <button id="${clearBtnId}" aria-label="清除筛选">×</button></div>` : ''}
   `;
 
-  const toggle = (name) => {
-    selectedCardName = selectedCardName === name ? null : name;
-    renderUserDetail();
-  };
   el.querySelectorAll('.comp-item').forEach((g) => {
-    g.addEventListener('click', () => toggle(g.getAttribute('data-card')));
+    g.addEventListener('click', () => onToggle(g.getAttribute('data-key')));
     g.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(g.getAttribute('data-card')); }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(g.getAttribute('data-key')); }
     });
   });
-  const clearBtn = document.getElementById('clearCardFilter');
-  if (clearBtn) clearBtn.addEventListener('click', () => { selectedCardName = null; renderUserDetail(); });
+  const clearBtn = document.getElementById(clearBtnId);
+  if (clearBtn) clearBtn.addEventListener('click', () => onToggle(selectedKey)); // 再传一次同一个key等于toggle掉
+}
+
+function renderCardComposition(filtered) {
+  const counts = {};
+  for (const r of filtered) {
+    const name = r.cardName || '(未命名)';
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  const items = Object.keys(counts).map((name) => ({
+    key: name, label: name, count: counts[name], color: cardColorMap[name] || 'var(--cat-1)',
+  }));
+  renderCompositionBar('compArea', items, selectedCardName, (key) => {
+    selectedCardName = selectedCardName === key ? null : key;
+    renderUserDetail();
+  }, '有效套餐按卡种占比，点击色块可筛选下方表格', 'card');
+}
+
+// 当日状态三色固定：本店预定=绿，跨店预定=红，闲置=灰（"已闲置N天"+"无历史订座记录"归一类）
+const STATUS_KIND_META = {
+  store: { label: '本店预定', color: 'var(--status-store)' },
+  cross: { label: '跨店预定', color: 'var(--status-cross)' },
+  idle: { label: '闲置', color: 'var(--status-idle)' },
+};
+
+function renderStatusComposition(withStatus) {
+  const counts = { store: 0, cross: 0, idle: 0 };
+  for (const { status } of withStatus) counts[status.kind]++;
+  const items = Object.keys(counts)
+    .filter((k) => counts[k] > 0)
+    .map((k) => ({ key: k, label: STATUS_KIND_META[k].label, count: counts[k], color: STATUS_KIND_META[k].color }));
+  renderCompositionBar('statusCompArea', items, selectedStatusKind, (key) => {
+    selectedStatusKind = selectedStatusKind === key ? null : key;
+    renderUserDetail();
+  }, '有效套餐用户当日状态占比，点击色块可筛选下方表格', 'status');
 }
 
 function renderKpis(data) {
