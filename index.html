@@ -16,6 +16,9 @@
   --baseline: #c3c2b7;
   --border: rgba(11,11,11,0.10);
   --series-1: #2a78d6;
+  --warn-bg: #fff4e5;
+  --warn-border: #e8b566;
+  --warn-text: #7a4a00;
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme="light"])) {
@@ -29,6 +32,9 @@
     --baseline: #383835;
     --border: rgba(255,255,255,0.10);
     --series-1: #3987e5;
+    --warn-bg: #2e2410;
+    --warn-border: #a97a1f;
+    --warn-text: #e8b566;
   }
 }
 :root[data-theme="dark"] {
@@ -42,6 +48,9 @@
   --baseline: #383835;
   --border: rgba(255,255,255,0.10);
   --series-1: #3987e5;
+  --warn-bg: #2e2410;
+  --warn-border: #a97a1f;
+  --warn-text: #e8b566;
 }
 * { box-sizing: border-box; }
 body {
@@ -90,6 +99,18 @@ td { padding: 6px 10px; border-bottom: 1px solid var(--gridline); }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .empty { color: var(--text-muted); font-size: 13px; padding: 20px 0; text-align: center; }
 .scroll-table { max-height: 400px; overflow-y: auto; }
+.warn { background: var(--warn-bg, #fff4e5); border: 1px solid var(--warn-border, #e8b566); color: var(--warn-text, #7a4a00); font-size: 12.5px; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; }
+.detail-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+.detail-controls input[type="text"] {
+  font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--baseline); background: var(--surface-page); color: var(--text-primary);
+}
+button.toggle {
+  font: inherit; font-size: 12.5px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--baseline); background: var(--surface-page); color: var(--text-secondary); cursor: pointer;
+}
+button.toggle.active { background: var(--series-1); color: white; border-color: var(--series-1); }
+.tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--gridline); color: var(--text-secondary); }
 </style>
 </head>
 <body>
@@ -122,6 +143,11 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
     <div class="scroll-table" id="tableArea"></div>
   </div>
 
+  <div class="card" id="userDetailCard">
+    <h2>有效套餐用户明细（本地专用，含手机号）</h2>
+    <div id="userDetailBody"></div>
+  </div>
+
   <div class="tooltip" id="tt"></div>
 </div>
 
@@ -130,6 +156,11 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
      fetch 读同目录文件会被浏览器的本地文件 CORS 限制挡住、读不到数据；script 标签没有这个限制，
      本地双击和挂在网上（GitHub Pages）都能正常显示。 -->
 <script src="./history.js"></script>
+<!-- local-detail-data.js 含真实客户手机号，加入了 .gitignore，从不提交/不会出现在 GitHub Pages 上。
+     本地跑过 `node gen-local-detail.js` 之后这个文件才会存在——线上这个 <script> 请求会 404，
+     不会报错、也不会泄露任何东西，下面 userDetailData 拿到的就是空值，明细区自动显示"本地未生成数据"。
+     本地双击打开、且已生成过数据的话，这里能正常读到数据显示明细表格。 -->
+<script src="./local-detail-data.js" onerror="window.__localDetailMissing = true"></script>
 <script>
 let ALL_DATA = [];
 
@@ -192,6 +223,86 @@ function render() {
   renderChart(data);
   renderDenomChart(data);
   renderTable(data);
+}
+
+// ---- 有效套餐用户明细（本地专用）----
+const maskPhone = (p) => (p && p.length >= 7) ? p.slice(0, 3) + '****' + p.slice(-4) : (p || '');
+let userDetailMask = true;
+
+function initUserDetailCard() {
+  const body = document.getElementById('userDetailBody');
+  const records = window.LOCAL_DETAIL_DATA;
+  if (!records) {
+    body.innerHTML = `
+      <p class="desc">本地未生成数据——线上看板不含这块内容，只有本地跑过生成脚本才能看到。</p>
+      <div class="warn">在 <code>cross-store-rate</code> 目录下跑：<code>FUNC_SHARED_SECRET=xxx node gen-local-detail.js</code>，
+      跑完刷新这个页面即可看到明细（生成的数据文件 <code>local-detail-data.js</code> 只存在本地，不会被提交/公开）。</div>
+    `;
+    return;
+  }
+  const genDate = window.LOCAL_DETAIL_GENERATED_AT || '未知日期';
+  body.innerHTML = `
+    <div class="warn">⚠️ 这块含真实客户手机号，只在本地看，别截图/公开分享——数据生成于 ${genDate}（想看最新的重新跑一次
+    <code>node gen-local-detail.js</code>），共 ${records.length} 条购买/验券记录。</div>
+    <div class="detail-controls">
+      <label>查看日期 <input type="date" id="detailDate" value="${genDate}" /></label>
+      <label>手机号/昵称筛选 <input type="text" id="detailSearch" placeholder="模糊搜索" /></label>
+      <button class="toggle active" id="detailMaskBtn">手机号已打码</button>
+    </div>
+    <div class="kpi-row" id="detailKpiRow" style="grid-template-columns: repeat(2, 1fr); max-width: 480px;"></div>
+    <div class="scroll-table" id="detailTableArea"></div>
+  `;
+  document.getElementById('detailDate').addEventListener('change', renderUserDetail);
+  document.getElementById('detailSearch').addEventListener('input', renderUserDetail);
+  const maskBtn = document.getElementById('detailMaskBtn');
+  maskBtn.addEventListener('click', () => {
+    userDetailMask = !userDetailMask;
+    maskBtn.textContent = userDetailMask ? '手机号已打码' : '手机号明文';
+    maskBtn.classList.toggle('active', userDetailMask);
+    renderUserDetail();
+  });
+  renderUserDetail();
+}
+
+function renderUserDetail() {
+  const records = window.LOCAL_DETAIL_DATA;
+  if (!records) return;
+  const dateStr = document.getElementById('detailDate').value;
+  const q = document.getElementById('detailSearch').value.trim().toLowerCase();
+
+  const validToday = dateStr ? records.filter((r) => r.start <= dateStr && dateStr <= r.end) : records;
+  const filtered = q
+    ? validToday.filter((r) => (r.phone || '').includes(q) || (r.nickName || '').toLowerCase().includes(q))
+    : validToday;
+  const uniqueUsers = new Set(filtered.map((r) => r.phone)).size;
+
+  document.getElementById('detailKpiRow').innerHTML = `
+    <div class="kpi"><div class="kpi-label">${dateStr || '全部'} 有效套餐记录数</div><div class="kpi-value">${filtered.length}</div></div>
+    <div class="kpi"><div class="kpi-label">涉及用户数(去重)</div><div class="kpi-value">${uniqueUsers}</div></div>
+  `;
+
+  const el = document.getElementById('detailTableArea');
+  if (!filtered.length) {
+    el.innerHTML = '<div class="empty">这个条件下没有数据</div>';
+    return;
+  }
+  const sorted = [...filtered].sort((a, b) => (a.phone < b.phone ? -1 : a.phone > b.phone ? 1 : (a.start < b.start ? -1 : 1)));
+  const rows = sorted.map((r) => `
+    <tr>
+      <td>${userDetailMask ? maskPhone(r.phone) : r.phone}</td>
+      <td>${r.nickName || ''}</td>
+      <td>${r.cardName || ''}</td>
+      <td><span class="tag">${r.source === 'purchase' ? '小程序内购买' : '第三方验券'}</span></td>
+      <td class="num">${r.start}</td>
+      <td class="num">${r.end}</td>
+    </tr>
+  `).join('');
+  el.innerHTML = `
+    <table>
+      <thead><tr><th>手机号</th><th>昵称</th><th>卡名</th><th>来源</th><th class="num">生效日期</th><th class="num">失效日期</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
 }
 
 function renderKpis(data) {
@@ -303,6 +414,7 @@ function renderDenomChart(data) {
 }
 
 loadData();
+initUserDetailCard();
 </script>
 </body>
 </html>
