@@ -124,11 +124,24 @@ button.toggle.active { background: var(--series-1); color: white; border-color: 
 /* 卡种分类色行底纹 + 占比条形统计 */
 .card-row { background-color: color-mix(in srgb, var(--row-color, var(--cat-other)) 16%, var(--surface-1)); }
 .card-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--row-color, var(--cat-other)); vertical-align: middle; }
-.comp-legend-svg { width: 100%; height: auto; display: block; overflow: visible; margin-bottom: 18px; }
+.comp-legend-svg { width: 100%; height: auto; display: block; overflow: visible; margin-bottom: 8px; }
+.comp-item { cursor: pointer; }
+.comp-item:hover .comp-seg { filter: brightness(1.1); }
+.comp-item.selected .comp-seg { stroke: var(--text-primary); stroke-width: 3; }
+.comp-item:focus-visible .comp-seg { outline: 2px solid var(--text-primary); outline-offset: 1px; }
 .comp-seg { stroke: var(--surface-1); stroke-width: 2; }
+.comp-pct { fill: #fff; font-size: 12px; font-weight: 700; paint-order: stroke; stroke: rgba(0,0,0,0.55); stroke-width: 3; stroke-linejoin: round; pointer-events: none; }
 .comp-leader { stroke: var(--baseline); stroke-width: 1; }
 .comp-label { fill: var(--text-secondary); font-size: 11px; }
 .comp-label .name { fill: var(--text-primary); font-weight: 600; }
+.filter-chip {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-primary);
+  background: var(--gridline); border-radius: 999px; padding: 4px 6px 4px 12px; margin-bottom: 14px;
+}
+.filter-chip button {
+  font: inherit; line-height: 1; width: 18px; height: 18px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--baseline); color: var(--text-primary);
+}
 </style>
 </head>
 <body>
@@ -246,11 +259,21 @@ function render() {
 // ---- 有效套餐用户明细（本地专用）----
 const maskPhone = (p) => (p && p.length >= 7) ? p.slice(0, 3) + '****' + p.slice(-4) : (p || '');
 let userDetailMask = true;
-let cardColorMap = {}; // cardName -> 'var(--cat-1)'..'var(--cat-8)' 或 'var(--cat-other)'
+let cardColorMap = {}; // cardName -> 颜色（前8名用 var(--cat-1..8)，第9名开始用程序生成的备用色，不折叠进"其他"）
+let selectedCardName = null; // 点了条形统计某个色块时选中的卡名，用来筛选下方表格；再点一次/点×清空
+
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// 第9种及以后的卡种，用固定公式生成颜色，不再折叠进灰色"其他"（2026-08-11 用户明确要求所有卡名都要
+// 直接展示，不要有"其他"这一项）。用黄金角分布哈希色相，保证相邻生成色也尽量分得开。
+function extraCategoricalColor(indexBeyond8) {
+  const hue = (137.508 * (indexBeyond8 + 1)) % 360;
+  return `hsl(${hue.toFixed(1)}, 58%, 45%)`;
+}
 
 // 卡种颜色按"全量数据里出现频率"固定分配一次，不随当前筛选变化——
 // 保证筛选切换时同一张卡的颜色不会跳变（dataviz skill：颜色要跟着实体走，不能跟着排名走）。
-// 出现次数最多的前8种各占一个分类色槽，其余全部归进"其他"用统一灰色。
+// 出现次数最多的前8种用 dataviz skill 校验过的分类色板，第9种开始用 extraCategoricalColor 生成。
 function buildCardColorMap(allRecords) {
   const counts = {};
   for (const r of allRecords) {
@@ -260,7 +283,7 @@ function buildCardColorMap(allRecords) {
   const ranked = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
   const map = {};
   ranked.forEach((name, i) => {
-    map[name] = i < 8 ? `var(--cat-${i + 1})` : 'var(--cat-other)';
+    map[name] = i < 8 ? `var(--cat-${i + 1})` : extraCategoricalColor(i - 8);
   });
   return map;
 }
@@ -288,7 +311,8 @@ function initUserDetailCard() {
     </div>
     <div class="kpi-row" id="detailKpiRow" style="grid-template-columns: repeat(2, 1fr); max-width: 480px;"></div>
     <p class="desc" style="margin-top:4px;">下面这行条形统计是当前筛选条件下（查看日期+搜索）有效套餐按卡种的占比，
-    颜色跟明细表格每行的底色是同一套，直线指向对应的卡名</p>
+    从左到右按数量从多到少排列，颜色跟明细表格每行的底色是同一套，直线指向对应的卡名和具体数量；
+    点击某个色块可以筛选出该卡种的用户明细，再点一次/点筛选条上的×取消筛选</p>
     <div id="compArea"></div>
     <div class="scroll-table" id="detailTableArea"></div>
   `;
@@ -314,23 +338,30 @@ function renderUserDetail() {
   const filtered = q
     ? validToday.filter((r) => (r.phone || '').includes(q) || (r.nickName || '').toLowerCase().includes(q))
     : validToday;
-  const uniqueUsers = new Set(filtered.map((r) => r.phone)).size;
+
+  // 条形统计始终基于"查看日期+搜索"这两个筛选，不受"点色块选中的卡种"影响——
+  // 这样点别的色块切换选中卡种时，能一直看到完整的占比分布做对比
+  renderCardComposition(filtered);
+
+  // 表格 + KPI 在此基础上再叠加"选中的卡种"筛选
+  const tableRows = selectedCardName
+    ? filtered.filter((r) => (r.cardName || '(未命名)') === selectedCardName)
+    : filtered;
+  const uniqueUsers = new Set(tableRows.map((r) => r.phone)).size;
 
   document.getElementById('detailKpiRow').innerHTML = `
-    <div class="kpi"><div class="kpi-label">${dateStr || '全部'} 有效套餐记录数</div><div class="kpi-value">${filtered.length}</div></div>
+    <div class="kpi"><div class="kpi-label">${dateStr || '全部'} 有效套餐记录数${selectedCardName ? '（已按卡种筛选）' : ''}</div><div class="kpi-value">${tableRows.length}</div></div>
     <div class="kpi"><div class="kpi-label">涉及用户数(去重)</div><div class="kpi-value">${uniqueUsers}</div></div>
   `;
 
-  renderCardComposition(filtered);
-
   const el = document.getElementById('detailTableArea');
-  if (!filtered.length) {
+  if (!tableRows.length) {
     el.innerHTML = '<div class="empty">这个条件下没有数据</div>';
     return;
   }
-  const sorted = [...filtered].sort((a, b) => (a.phone < b.phone ? -1 : a.phone > b.phone ? 1 : (a.start < b.start ? -1 : 1)));
+  const sorted = [...tableRows].sort((a, b) => (a.phone < b.phone ? -1 : a.phone > b.phone ? 1 : (a.start < b.start ? -1 : 1)));
   const rows = sorted.map((r) => {
-    const color = cardColorMap[r.cardName || '(未命名)'] || 'var(--cat-other)';
+    const color = cardColorMap[r.cardName || '(未命名)'] || 'var(--cat-1)';
     return `
     <tr class="card-row" style="--row-color: ${color}">
       <td>${userDetailMask ? maskPhone(r.phone) : r.phone}</td>
@@ -350,8 +381,9 @@ function renderUserDetail() {
   `;
 }
 
-// 条形统计：当前筛选出的记录按卡名分组占比，画一条100%堆叠横条，
-// 每个色块底下拉一根线（长短交替错开，避免窄色块的标签挤在一起）指到"卡名 百分比"文字
+// 条形统计：当前筛选出的记录按卡名分组占比，画一条100%堆叠横条，从左到右按数量从多到少排列。
+// 百分比写在每个色块中间，色块下方拉一根线（长短交替错开，避免窄色块的标签挤在一起）指到"卡名 (数量)"。
+// 所有卡名都单独展示、单独一个颜色，不折叠成"其他"。点色块可以筛选下方表格，再点一次取消。
 function renderCardComposition(filtered) {
   const el = document.getElementById('compArea');
   if (!filtered.length) {
@@ -363,56 +395,59 @@ function renderCardComposition(filtered) {
     const name = r.cardName || '(未命名)';
     counts[name] = (counts[name] || 0) + 1;
   }
-  // 归并"其他"色槽下的所有卡名为一个色块，跟表格/圆点用的颜色分配保持一致
-  const bySlot = {};
-  for (const name of Object.keys(counts)) {
-    const slot = cardColorMap[name] || 'var(--cat-other)';
-    if (!bySlot[slot]) bySlot[slot] = { slot, count: 0, names: [] };
-    bySlot[slot].count += counts[name];
-    bySlot[slot].names.push(name);
-  }
-  // 按数量从大到小排，"其他"（不管数量）排最后，视觉上跟表格颜色分配的"前8常见卡种优先"逻辑呼应
-  const segments = Object.values(bySlot).sort((a, b) => {
-    if (a.slot === 'var(--cat-other)') return 1;
-    if (b.slot === 'var(--cat-other)') return -1;
-    return b.count - a.count;
-  });
+  const segments = Object.keys(counts)
+    .map((name) => ({ name, count: counts[name], color: cardColorMap[name] || 'var(--cat-1)' }))
+    .sort((a, b) => b.count - a.count); // 从多到少
   const total = filtered.length;
 
   const W = 1000, gap = 4, n = segments.length;
   const totalGap = gap * Math.max(0, n - 1);
   const usableW = W - totalGap;
   let cursorX = 0;
-  const barY = 10, barH = 28;
-  const rects = [];
-  const leaders = [];
+  const barY = 10, barH = 32;
+  const items = [];
   segments.forEach((seg, i) => {
     const w = (seg.count / total) * usableW;
     const cx = cursorX + w / 2;
-    rects.push(`<rect class="comp-seg" x="${cursorX.toFixed(2)}" y="${barY}" width="${Math.max(w, 0).toFixed(2)}" height="${barH}" rx="3" fill="${seg.slot}"></rect>`);
+    const pct = Math.round((seg.count / total) * 1000) / 10;
     const tier = i % 2; // 长短交替错开标签，减少窄色块标签互相重叠
     const lineEndY = tier === 0 ? barY + barH + 14 : barY + barH + 34;
     const labelY = lineEndY + 13;
-    const pct = Math.round((seg.count / total) * 1000) / 10;
-    const label = seg.slot === 'var(--cat-other)'
-      ? `其他(${seg.names.length}种)`
-      : (seg.names[0].length > 8 ? seg.names[0].slice(0, 8) + '…' : seg.names[0]);
-    leaders.push(`
-      <line class="comp-leader" x1="${cx.toFixed(2)}" y1="${barY + barH}" x2="${cx.toFixed(2)}" y2="${lineEndY}"></line>
-      <circle cx="${cx.toFixed(2)}" cy="${lineEndY}" r="3" fill="${seg.slot}"></circle>
-      <text class="comp-label" x="${cx.toFixed(2)}" y="${labelY}" text-anchor="middle">
-        <tspan class="name">${label}</tspan> <tspan>${pct}%</tspan>
-      </text>
+    const showInlinePct = w > 42; // 色块太窄放不下百分比文字就不硬塞
+    const isSelected = selectedCardName === seg.name;
+    items.push(`
+      <g class="comp-item${isSelected ? ' selected' : ''}" data-card="${escapeHtml(seg.name)}" role="button" tabindex="0" aria-label="筛选卡种：${escapeHtml(seg.name)}">
+        <rect class="comp-seg" x="${cursorX.toFixed(2)}" y="${barY}" width="${Math.max(w, 0).toFixed(2)}" height="${barH}" rx="3" fill="${seg.color}"></rect>
+        ${showInlinePct ? `<text class="comp-pct" x="${cx.toFixed(2)}" y="${(barY + barH / 2 + 4).toFixed(2)}" text-anchor="middle">${pct}%</text>` : ''}
+        <line class="comp-leader" x1="${cx.toFixed(2)}" y1="${barY + barH}" x2="${cx.toFixed(2)}" y2="${lineEndY}"></line>
+        <circle cx="${cx.toFixed(2)}" cy="${lineEndY}" r="3" fill="${seg.color}"></circle>
+        <text class="comp-label" x="${cx.toFixed(2)}" y="${labelY}" text-anchor="middle">
+          <tspan class="name">${escapeHtml(seg.name)}</tspan> <tspan>(${seg.count})</tspan>
+        </text>
+      </g>
     `);
     cursorX += w + gap;
   });
 
   el.innerHTML = `
-    <svg viewBox="0 0 ${W} 110" class="comp-legend-svg" role="img" aria-label="有效套餐按卡种占比">
-      ${rects.join('')}
-      ${leaders.join('')}
+    <svg viewBox="0 0 ${W} 110" class="comp-legend-svg" role="img" aria-label="有效套餐按卡种占比，点击色块可筛选下方表格">
+      ${items.join('')}
     </svg>
+    ${selectedCardName ? `<div class="filter-chip">筛选中：${escapeHtml(selectedCardName)} <button id="clearCardFilter" aria-label="清除筛选">×</button></div>` : ''}
   `;
+
+  const toggle = (name) => {
+    selectedCardName = selectedCardName === name ? null : name;
+    renderUserDetail();
+  };
+  el.querySelectorAll('.comp-item').forEach((g) => {
+    g.addEventListener('click', () => toggle(g.getAttribute('data-card')));
+    g.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(g.getAttribute('data-card')); }
+    });
+  });
+  const clearBtn = document.getElementById('clearCardFilter');
+  if (clearBtn) clearBtn.addEventListener('click', () => { selectedCardName = null; renderUserDetail(); });
 }
 
 function renderKpis(data) {
