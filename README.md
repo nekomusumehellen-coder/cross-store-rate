@@ -37,8 +37,27 @@
   `index.html` 用 `<script src="./history.js">` 加载数据而不是 `fetch('./history.json')`，
   因为本地双击打开网页时 `fetch` 读同目录文件会被浏览器的本地文件 CORS 限制挡住、显示不出数据，
   `<script src>` 没有这个限制，两种打开方式都能用（2026-08-06 发现这个问题后改的）
-- `index.html`：看板页面，动态曲线图 + 日期区间选择器 + 明细表格
+- `index.html`：看板页面，跨店率+有效套餐数量两条动态曲线图 + 日期区间选择器 + 明细表格。**只有聚合数字，不含任何手机号/昵称**，可以放心公开
 - `.github/workflows/collect.yml`：每天定时跑 `collect.js`，提交 `history.json`/`history.js`，再部署到 GitHub Pages
+
+### 本地专用：有效套餐明细（含手机号，不进公开仓库）
+
+`index.html` 上"有效套餐数量趋势"图只有每天的**总数**，如果想看某天具体是哪些用户持有有效套餐（手机号、昵称、
+卡名、生效/失效日期），用这一套本地专用工具，数据**不会**提交进这个公开仓库：
+
+- `gen-local-detail.js`：本地跑一次，拉全部购买+验券记录，生成 `local-detail-data.js`
+- `local-detail-data.js`：含真实客户手机号，已加入 `.gitignore`，**不会被提交**
+- `local-detail.html`：本地专用查看页，可选日期查看当天有效的套餐明细，支持手机号/昵称模糊搜索，
+  默认手机号打码显示（点按钮切明文）
+
+用法：
+
+```bash
+FUNC_SHARED_SECRET=xxx node gen-local-detail.js
+```
+
+跑完双击打开 `local-detail.html` 即可（用的也是 `<script src>` 加载数据这套，双击直接能用）。
+想看最新数据，重新跑一遍生成脚本、刷新页面就行——这个工具没有自动定时更新，需要手动跑。
 
 ## 配置
 

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>回兴店有效套餐明细（本地专用）</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb;
+  --surface-page: #f9f9f7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --gridline: #e1e0d9;
+  --baseline: #c3c2b7;
+  --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6;
+  --warn-bg: #fff4e5;
+  --warn-border: #e8b566;
+  --warn-text: #7a4a00;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --surface-page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5;
+    --warn-bg: #2e2410;
+    --warn-border: #a97a1f;
+    --warn-text: #e8b566;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --surface-page: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --gridline: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255,255,255,0.10);
+  --series-1: #3987e5;
+  --warn-bg: #2e2410;
+  --warn-border: #a97a1f;
+  --warn-text: #e8b566;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text-primary); background: var(--surface-page); }
+.wrap { max-width: 980px; margin: 0 auto; padding: 28px 20px 48px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.subtitle { color: var(--text-secondary); font-size: 13px; margin: 0 0 16px; }
+.warn { background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn-text); font-size: 12.5px; padding: 10px 14px; border-radius: 8px; margin-bottom: 20px; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
+.controls label { font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
+.controls input[type="date"], .controls input[type="text"] {
+  font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--baseline); background: var(--surface-1); color: var(--text-primary);
+}
+button.toggle {
+  font: inherit; font-size: 12.5px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--baseline); background: var(--surface-1); color: var(--text-secondary); cursor: pointer;
+}
+button.toggle.active { background: var(--series-1); color: white; border-color: var(--series-1); }
+.kpi-row { display: flex; gap: 12px; margin-bottom: 16px; }
+.kpi { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; }
+.kpi-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.kpi-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 20px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--text-secondary); font-weight: 500; font-size: 12px; padding: 6px 10px; border-bottom: 1px solid var(--baseline); position: sticky; top: 0; background: var(--surface-1); }
+td { padding: 6px 10px; border-bottom: 1px solid var(--gridline); white-space: nowrap; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--gridline); color: var(--text-secondary); }
+.empty { color: var(--text-muted); font-size: 13px; padding: 20px 0; text-align: center; }
+.scroll-table { max-height: 560px; overflow-y: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>回兴店有效套餐明细</h1>
+  <p class="subtitle" id="genInfo">本地专用工具，不会挂在公开看板上</p>
+  <div class="warn">⚠️ 这个页面含真实客户手机号，只在本地看，别截图/发出去公开——跟公开的跨店率看板是分开的两个东西。</div>
+
+  <div class="controls">
+    <label>查看日期 <input type="date" id="theDate" /></label>
+    <label>手机号/昵称筛选 <input type="text" id="searchBox" placeholder="模糊搜索" /></label>
+    <button class="toggle active" id="maskBtn">手机号已打码</button>
+  </div>
+
+  <div class="kpi-row" id="kpiRow"></div>
+
+  <div class="card">
+    <div class="scroll-table" id="tableArea"></div>
+  </div>
+</div>
+
+<!-- local-detail-data.js 由 gen-local-detail.js 生成，含真实手机号，已加入 .gitignore 不会被提交。
+     跟 history.js 一样用 <script src> 加载，避免本地双击打开时 fetch 读同目录文件被浏览器 CORS 挡住。 -->
+<script src="./local-detail-data.js"></script>
+<script>
+const maskPhone = (p) => (p && p.length >= 7) ? p.slice(0, 3) + '****' + p.slice(-4) : (p || '');
+let mask = true;
+
+function init() {
+  const genInfo = document.getElementById('genInfo');
+  const data = window.LOCAL_DETAIL_DATA || null;
+  if (!data) {
+    genInfo.textContent = '还没有数据——先跑 FUNC_SHARED_SECRET=xxx node gen-local-detail.js 生成 local-detail-data.js';
+  } else {
+    genInfo.textContent = `数据生成于 ${window.LOCAL_DETAIL_GENERATED_AT || '未知日期'}，共 ${data.length} 条购买/验券记录（想看最新的重新跑一次生成脚本）`;
+  }
+
+  const dateInput = document.getElementById('theDate');
+  dateInput.value = window.LOCAL_DETAIL_GENERATED_AT || new Date().toISOString().slice(0, 10);
+  dateInput.addEventListener('change', render);
+  document.getElementById('searchBox').addEventListener('input', render);
+
+  const maskBtn = document.getElementById('maskBtn');
+  maskBtn.addEventListener('click', () => {
+    mask = !mask;
+    maskBtn.textContent = mask ? '手机号已打码' : '手机号明文';
+    maskBtn.classList.toggle('active', mask);
+    render();
+  });
+
+  render();
+}
+
+function render() {
+  const all = window.LOCAL_DETAIL_DATA || [];
+  const dateStr = document.getElementById('theDate').value;
+  const q = document.getElementById('searchBox').value.trim().toLowerCase();
+
+  // 某天有效 = 这天落在 [start, end] 区间内的记录，按手机号分组显示这个人当天所有生效的卡
+  const validToday = dateStr ? all.filter((r) => r.start <= dateStr && dateStr <= r.end) : all;
+  const filtered = q
+    ? validToday.filter((r) => (r.phone || '').includes(q) || (r.nickName || '').toLowerCase().includes(q))
+    : validToday;
+
+  const uniqueUsers = new Set(filtered.map((r) => r.phone)).size;
+
+  document.getElementById('kpiRow').innerHTML = `
+    <div class="kpi"><div class="kpi-label">${dateStr || '全部'} 有效套餐记录数</div><div class="kpi-value">${filtered.length}</div></div>
+    <div class="kpi"><div class="kpi-label">涉及用户数(去重)</div><div class="kpi-value">${uniqueUsers}</div></div>
+  `;
+
+  const tableArea = document.getElementById('tableArea');
+  if (!filtered.length) {
+    tableArea.innerHTML = '<div class="empty">这个条件下没有数据</div>';
+    return;
+  }
+  const sorted = [...filtered].sort((a, b) => (a.phone < b.phone ? -1 : a.phone > b.phone ? 1 : (a.start < b.start ? -1 : 1)));
+  const rows = sorted.map((r) => `
+    <tr>
+      <td>${mask ? maskPhone(r.phone) : r.phone}</td>
+      <td>${r.nickName || ''}</td>
+      <td>${r.cardName || ''}</td>
+      <td><span class="tag">${r.source === 'purchase' ? '小程序内购买' : '第三方验券'}</span></td>
+      <td class="num">${r.start}</td>
+      <td class="num">${r.end}</td>
+    </tr>
+  `).join('');
+  tableArea.innerHTML = `
+    <table>
+      <thead><tr><th>手机号</th><th>昵称</th><th>卡名</th><th>来源</th><th class="num">生效日期</th><th class="num">失效日期</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+init();
+</script>
+</body>
+</html>

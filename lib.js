@@ -92,6 +92,36 @@ function denominatorOnDate(cardsByUser, dateStr) {
   return count;
 }
 
+// 跟 buildCardIntervals 拉的是同一份数据，但不做"按用户合并成区间数组"的精简，
+// 保留每条记录的昵称/卡名/来源，供本地"有效套餐明细"工具用（含手机号，不能进公开仓库/看板）。
+async function buildCardRecords(untilDateStr) {
+  const rangeParams = { startTime: `${EARLIEST_DATE} 00:00:00`, endTime: `${untilDateStr} 23:59:59` };
+  const [purchases, exchanges] = await Promise.all([
+    fetchAllPages({ store: STORE, ...rangeParams }),
+    fetchAllPages({ store: STORE, mode: "exchange-records", channel: "", ...rangeParams }),
+  ]);
+  const records = [];
+  const tag = (rows, source) => {
+    for (const r of rows) {
+      if (!r.userPhone || !r.orderCreateTime || !r.userCardExpiredTime) continue;
+      const start = r.orderCreateTime.slice(0, 10);
+      const end = r.userCardExpiredTime.slice(0, 10);
+      if (start > end) continue;
+      records.push({
+        phone: r.userPhone,
+        nickName: r.nickName || "",
+        cardName: r.cardName || "",
+        start,
+        end,
+        source, // "purchase"(小程序内购买) | "exchange"(第三方渠道验券)
+      });
+    }
+  };
+  tag(purchases, "purchase");
+  tag(exchanges, "exchange");
+  return records;
+}
+
 // 分子：某一天跨店结算(流出方向)涉及的用户数，按手机号去重
 async function computeNumeratorForDate(dateStr) {
   const rows = await fetchAllPages({
@@ -105,4 +135,4 @@ async function computeNumeratorForDate(dateStr) {
   return users.size;
 }
 
-module.exports = { STORE, EARLIEST_DATE, beijingDateStr, fetchAllPages, buildCardIntervals, denominatorOnDate, computeNumeratorForDate };
+module.exports = { STORE, EARLIEST_DATE, beijingDateStr, fetchAllPages, buildCardIntervals, buildCardRecords, denominatorOnDate, computeNumeratorForDate };
