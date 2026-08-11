@@ -19,6 +19,10 @@
   --warn-bg: #fff4e5;
   --warn-border: #e8b566;
   --warn-text: #7a4a00;
+  /* 卡种分类色（有效套餐用户明细用），固定顺序，八色分类板+其他灰——dataviz skill 校验过的默认配色 */
+  --cat-1: #2a78d6; --cat-2: #eb6834; --cat-3: #1baf7a; --cat-4: #eda100;
+  --cat-5: #e87ba4; --cat-6: #008300; --cat-7: #4a3aa7; --cat-8: #e34948;
+  --cat-other: #898781;
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme="light"])) {
@@ -35,6 +39,9 @@
     --warn-bg: #2e2410;
     --warn-border: #a97a1f;
     --warn-text: #e8b566;
+    --cat-1: #3987e5; --cat-2: #d95926; --cat-3: #199e70; --cat-4: #c98500;
+    --cat-5: #d55181; --cat-6: #008300; --cat-7: #9085e9; --cat-8: #e66767;
+    --cat-other: #898781;
   }
 }
 :root[data-theme="dark"] {
@@ -51,6 +58,9 @@
   --warn-bg: #2e2410;
   --warn-border: #a97a1f;
   --warn-text: #e8b566;
+  --cat-1: #3987e5; --cat-2: #d95926; --cat-3: #199e70; --cat-4: #c98500;
+  --cat-5: #d55181; --cat-6: #008300; --cat-7: #9085e9; --cat-8: #e66767;
+  --cat-other: #898781;
 }
 * { box-sizing: border-box; }
 body {
@@ -111,6 +121,14 @@ button.toggle {
 }
 button.toggle.active { background: var(--series-1); color: white; border-color: var(--series-1); }
 .tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--gridline); color: var(--text-secondary); }
+/* 卡种分类色行底纹 + 占比条形统计 */
+.card-row { background-color: color-mix(in srgb, var(--row-color, var(--cat-other)) 16%, var(--surface-1)); }
+.card-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--row-color, var(--cat-other)); vertical-align: middle; }
+.comp-legend-svg { width: 100%; height: auto; display: block; overflow: visible; margin-bottom: 18px; }
+.comp-seg { stroke: var(--surface-1); stroke-width: 2; }
+.comp-leader { stroke: var(--baseline); stroke-width: 1; }
+.comp-label { fill: var(--text-secondary); font-size: 11px; }
+.comp-label .name { fill: var(--text-primary); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -228,6 +246,24 @@ function render() {
 // ---- 有效套餐用户明细（本地专用）----
 const maskPhone = (p) => (p && p.length >= 7) ? p.slice(0, 3) + '****' + p.slice(-4) : (p || '');
 let userDetailMask = true;
+let cardColorMap = {}; // cardName -> 'var(--cat-1)'..'var(--cat-8)' 或 'var(--cat-other)'
+
+// 卡种颜色按"全量数据里出现频率"固定分配一次，不随当前筛选变化——
+// 保证筛选切换时同一张卡的颜色不会跳变（dataviz skill：颜色要跟着实体走，不能跟着排名走）。
+// 出现次数最多的前8种各占一个分类色槽，其余全部归进"其他"用统一灰色。
+function buildCardColorMap(allRecords) {
+  const counts = {};
+  for (const r of allRecords) {
+    const name = r.cardName || '(未命名)';
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  const ranked = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+  const map = {};
+  ranked.forEach((name, i) => {
+    map[name] = i < 8 ? `var(--cat-${i + 1})` : 'var(--cat-other)';
+  });
+  return map;
+}
 
 function initUserDetailCard() {
   const body = document.getElementById('userDetailBody');
@@ -240,6 +276,7 @@ function initUserDetailCard() {
     `;
     return;
   }
+  cardColorMap = buildCardColorMap(records);
   const genDate = window.LOCAL_DETAIL_GENERATED_AT || '未知日期';
   body.innerHTML = `
     <div class="warn">⚠️ 这块含真实客户手机号，只在本地看，别截图/公开分享——数据生成于 ${genDate}（想看最新的重新跑一次
@@ -250,6 +287,9 @@ function initUserDetailCard() {
       <button class="toggle active" id="detailMaskBtn">手机号已打码</button>
     </div>
     <div class="kpi-row" id="detailKpiRow" style="grid-template-columns: repeat(2, 1fr); max-width: 480px;"></div>
+    <p class="desc" style="margin-top:4px;">下面这行条形统计是当前筛选条件下（查看日期+搜索）有效套餐按卡种的占比，
+    颜色跟明细表格每行的底色是同一套，直线指向对应的卡名</p>
+    <div id="compArea"></div>
     <div class="scroll-table" id="detailTableArea"></div>
   `;
   document.getElementById('detailDate').addEventListener('change', renderUserDetail);
@@ -281,27 +321,97 @@ function renderUserDetail() {
     <div class="kpi"><div class="kpi-label">涉及用户数(去重)</div><div class="kpi-value">${uniqueUsers}</div></div>
   `;
 
+  renderCardComposition(filtered);
+
   const el = document.getElementById('detailTableArea');
   if (!filtered.length) {
     el.innerHTML = '<div class="empty">这个条件下没有数据</div>';
     return;
   }
   const sorted = [...filtered].sort((a, b) => (a.phone < b.phone ? -1 : a.phone > b.phone ? 1 : (a.start < b.start ? -1 : 1)));
-  const rows = sorted.map((r) => `
-    <tr>
+  const rows = sorted.map((r) => {
+    const color = cardColorMap[r.cardName || '(未命名)'] || 'var(--cat-other)';
+    return `
+    <tr class="card-row" style="--row-color: ${color}">
       <td>${userDetailMask ? maskPhone(r.phone) : r.phone}</td>
       <td>${r.nickName || ''}</td>
-      <td>${r.cardName || ''}</td>
+      <td><span class="card-dot" style="--row-color: ${color}"></span>${r.cardName || ''}</td>
       <td><span class="tag">${r.source === 'purchase' ? '小程序内购买' : '第三方验券'}</span></td>
       <td class="num">${r.start}</td>
       <td class="num">${r.end}</td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
   el.innerHTML = `
     <table>
       <thead><tr><th>手机号</th><th>昵称</th><th>卡名</th><th>来源</th><th class="num">生效日期</th><th class="num">失效日期</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
+  `;
+}
+
+// 条形统计：当前筛选出的记录按卡名分组占比，画一条100%堆叠横条，
+// 每个色块底下拉一根线（长短交替错开，避免窄色块的标签挤在一起）指到"卡名 百分比"文字
+function renderCardComposition(filtered) {
+  const el = document.getElementById('compArea');
+  if (!filtered.length) {
+    el.innerHTML = '';
+    return;
+  }
+  const counts = {};
+  for (const r of filtered) {
+    const name = r.cardName || '(未命名)';
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  // 归并"其他"色槽下的所有卡名为一个色块，跟表格/圆点用的颜色分配保持一致
+  const bySlot = {};
+  for (const name of Object.keys(counts)) {
+    const slot = cardColorMap[name] || 'var(--cat-other)';
+    if (!bySlot[slot]) bySlot[slot] = { slot, count: 0, names: [] };
+    bySlot[slot].count += counts[name];
+    bySlot[slot].names.push(name);
+  }
+  // 按数量从大到小排，"其他"（不管数量）排最后，视觉上跟表格颜色分配的"前8常见卡种优先"逻辑呼应
+  const segments = Object.values(bySlot).sort((a, b) => {
+    if (a.slot === 'var(--cat-other)') return 1;
+    if (b.slot === 'var(--cat-other)') return -1;
+    return b.count - a.count;
+  });
+  const total = filtered.length;
+
+  const W = 1000, gap = 4, n = segments.length;
+  const totalGap = gap * Math.max(0, n - 1);
+  const usableW = W - totalGap;
+  let cursorX = 0;
+  const barY = 10, barH = 28;
+  const rects = [];
+  const leaders = [];
+  segments.forEach((seg, i) => {
+    const w = (seg.count / total) * usableW;
+    const cx = cursorX + w / 2;
+    rects.push(`<rect class="comp-seg" x="${cursorX.toFixed(2)}" y="${barY}" width="${Math.max(w, 0).toFixed(2)}" height="${barH}" rx="3" fill="${seg.slot}"></rect>`);
+    const tier = i % 2; // 长短交替错开标签，减少窄色块标签互相重叠
+    const lineEndY = tier === 0 ? barY + barH + 14 : barY + barH + 34;
+    const labelY = lineEndY + 13;
+    const pct = Math.round((seg.count / total) * 1000) / 10;
+    const label = seg.slot === 'var(--cat-other)'
+      ? `其他(${seg.names.length}种)`
+      : (seg.names[0].length > 8 ? seg.names[0].slice(0, 8) + '…' : seg.names[0]);
+    leaders.push(`
+      <line class="comp-leader" x1="${cx.toFixed(2)}" y1="${barY + barH}" x2="${cx.toFixed(2)}" y2="${lineEndY}"></line>
+      <circle cx="${cx.toFixed(2)}" cy="${lineEndY}" r="3" fill="${seg.slot}"></circle>
+      <text class="comp-label" x="${cx.toFixed(2)}" y="${labelY}" text-anchor="middle">
+        <tspan class="name">${label}</tspan> <tspan>${pct}%</tspan>
+      </text>
+    `);
+    cursorX += w + gap;
+  });
+
+  el.innerHTML = `
+    <svg viewBox="0 0 ${W} 110" class="comp-legend-svg" role="img" aria-label="有效套餐按卡种占比">
+      ${rects.join('')}
+      ${leaders.join('')}
+    </svg>
   `;
 }
 
