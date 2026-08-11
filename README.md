@@ -23,6 +23,13 @@
   `exchange-records` 接口不传日期范围时会默默截断成一小段最近记录，不是真的"不限时间"，
   2026-08-06 踩过这个坑（一度被截断到只有32/78/99条这种不稳定的小数字，传了正确日期范围后才稳定在
   2300+条）。
+  ⚠️ **冻结的卡、锁座固定座位的卡都不算"有效"**（2026-08-11 用户明确要求）：`lib.js` 的
+  `isExcludedFromValid()` 会把 `userCardStatus === "FREEZE"`（冻结，跟 VALID/INVALID 并列的独立状态）
+  或者 `cardTypeCode === "LONG_TERM"`（`cardTypeName` 显示"锁座卡"，也就是锁座固定座位那类）的记录整条
+  剔除，不参与任何一天的有效区间计算——回兴店全量 2557 条记录里有 42 条命中（9条冻结+33条锁座），
+  剔除后这些记录既不会出现在"有效套餐用户明细"里，也不会计入跨店率的分母。这条规则改了以后用
+  `recompute-denominator.js` 把 `history.json` 里已有的全部历史记录重新按新口径算了一遍（分子不受影响，
+  原样保留，只有分母/跨店率变了），436天历史记录里有405天的分母发生了变化（基本每天都有零星的冻结/锁座卡）。
 - **分子**：当天(北京时间)跨店结算**流出方向**(`purchases.js?mode=cross-store-settlement&direction=out`)
   涉及的用户数，按手机号去重——也就是"回兴店卖出的卡，当天在别的门店消费"的人数，这个是精确值不是近似值。
 
@@ -31,6 +38,9 @@
 - `lib.js`：共享逻辑（拉数据、算分母分子），`collect.js`/`backfill.js` 都靠它
 - `collect.js`：每日结算脚本，算出"前一天"一条记录，追加/覆盖进 `history.json`
 - `backfill.js`：一次性历史回填脚本，见下面单独一节
+- `recompute-denominator.js`：分母算法改了以后，用新口径重新计算 `history.json` 里已有全部记录的分母/跨店率
+  （分子不变）。跟 `backfill.js` 不一样——`backfill.js` 只补没有的日期，这个是覆盖已有的日期。
+  平时不用跑，只有改了 `lib.js` 分母算法之后才需要跑一次：`FUNC_SHARED_SECRET=xxx node recompute-denominator.js`
 - `history.json`：累积的每日数据 `[{date, numerator, denominator, rate, backfilled?}, ...]`，
   `backfilled: true` 表示这条是回填出来的近似值，不是真实每日结算跑出来的
 - `history.js`：内容跟 `history.json` 完全一样，只是包了一层 `window.HISTORY_DATA = [...]`——

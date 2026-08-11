@@ -9,6 +9,8 @@
 // 这张卡会被算成"比实际有效期更长"，分母会偏高——2026-08-06 已跟用户确认接受这个精度。
 // ⚠️ 查这两个接口时必须传 startTime/endTime 日期范围，不能留空——王知之的 exchange-records
 // 接口不传日期范围时会默默截断成一小段最近记录，不是真的"不限时间"，之前踩过这个坑。
+// ⚠️ 2026-08-11：冻结(userCardStatus="FREEZE")和锁座固定座位(cardTypeCode="LONG_TERM"/
+// cardTypeName="锁座卡")的记录不算"有效"，两者都会被整条剔除，不参与区间计算——见 isExcludedFromValid()。
 
 const FUNC_SECRET = process.env.FUNC_SHARED_SECRET;
 const STORE = "回兴";
@@ -65,6 +67,15 @@ async function fetchAllPages(paramsBase, onProgress) {
   return all;
 }
 
+// 2026-08-11 用户明确要求：冻结的卡不算有效，锁座固定座位的卡也不算有效——这两种都不该
+// 进"有效套餐用户明细"，也不该算进跨店率的分母。判断依据（实测过回兴店全量2557条记录确认的字段）：
+// - `userCardStatus === "FREEZE"` = 冻结（王知之后台把这个状态跟 VALID/INVALID 并列，不是 INVALID 的子集）
+// - `cardTypeCode === "LONG_TERM"`（`cardTypeName` 显示"锁座卡"）= 锁座/固定座位类型的卡
+// 两个条件符合任意一个就整条记录剔除，不参与"这张卡在哪几天算有效"的区间计算。
+function isExcludedFromValid(r) {
+  return r.userCardStatus === "FREEZE" || r.cardTypeCode === "LONG_TERM";
+}
+
 // 拉全部购买+验券记录（截止到 untilDateStr），按手机号整理出每个用户名下所有卡的 [生效,失效] 区间
 async function buildCardIntervals(untilDateStr) {
   const rangeParams = { startTime: `${EARLIEST_DATE} 00:00:00`, endTime: `${untilDateStr} 23:59:59` };
@@ -73,14 +84,16 @@ async function buildCardIntervals(untilDateStr) {
     fetchAllPages({ store: STORE, mode: "exchange-records", channel: "", ...rangeParams }),
   ]);
   const cardsByUser = {};
+  let excluded = 0;
   for (const r of [...purchases, ...exchanges]) {
     if (!r.userPhone || !r.orderCreateTime || !r.userCardExpiredTime) continue;
+    if (isExcludedFromValid(r)) { excluded++; continue; }
     const start = r.orderCreateTime.slice(0, 10);
     const end = r.userCardExpiredTime.slice(0, 10);
     if (start > end) continue;
     (cardsByUser[r.userPhone] ||= []).push([start, end]);
   }
-  console.log(`分母数据源：购买记录 ${purchases.length} 条 + 验券记录 ${exchanges.length} 条，涉及 ${Object.keys(cardsByUser).length} 个不同用户`);
+  console.log(`分母数据源：购买记录 ${purchases.length} 条 + 验券记录 ${exchanges.length} 条，其中 ${excluded} 条是冻结/锁座卡已剔除，涉及 ${Object.keys(cardsByUser).length} 个不同用户`);
   return cardsByUser;
 }
 
@@ -104,6 +117,7 @@ async function buildCardRecords(untilDateStr) {
   const tag = (rows, source) => {
     for (const r of rows) {
       if (!r.userPhone || !r.orderCreateTime || !r.userCardExpiredTime) continue;
+      if (isExcludedFromValid(r)) continue; // 冻结/锁座卡不算有效，本地明细页也不该显示
       const start = r.orderCreateTime.slice(0, 10);
       const end = r.userCardExpiredTime.slice(0, 10);
       if (start > end) continue;
