@@ -20,23 +20,46 @@ function beijingDateStr(offsetDays = 0) {
   return now.toISOString().slice(0, 10);
 }
 
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// 王知之后台偶尔会抽风返回 {"error":"fetch failed"}（这个项目从头到尾都踩过好几次，不是我们这边的问题）。
+// ⚠️ 2026-08-10 吃过一次亏：之前遇到这种报错只是打印日志、拿着已经拉到的不完整数据继续算，
+// 算出了"跨店率130%"这种明显错误的结果还提交上去了。现在改成：单页失败重试3次，
+// 3次都失败就直接抛异常，让整个脚本失败退出——宁可这次不更新，也不能把错误数据提交进 history.json。
+async function fetchOnePage(paramsBase, page) {
+  const params = new URLSearchParams({ ...paramsBase, pageSize: "100", pageNo: String(page) });
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await fetch(`${BASE}/purchases?${params}`, {
+        headers: { "x-func-secret": FUNC_SECRET },
+      });
+      const json = await resp.json();
+      if (!json.data) {
+        lastErr = new Error(`接口返回异常：${JSON.stringify(json)}`);
+      } else {
+        return json.data;
+      }
+    } catch (e) {
+      lastErr = e;
+    }
+    console.error(`第${page}页第${attempt}次请求失败：${lastErr.message}，${attempt < 3 ? "重试中..." : "放弃"}`);
+    if (attempt < 3) await sleep(2000 * attempt);
+  }
+  throw lastErr;
+}
+
 async function fetchAllPages(paramsBase, onProgress) {
   let page = 1;
   const all = [];
   while (true) {
-    const params = new URLSearchParams({ ...paramsBase, pageSize: "100", pageNo: String(page) });
-    const resp = await fetch(`${BASE}/purchases?${params}`, {
-      headers: { "x-func-secret": FUNC_SECRET },
-    });
-    const json = await resp.json();
-    if (!json.data) {
-      console.error("接口返回异常：", JSON.stringify(json));
-      break;
-    }
-    const rows = json.data.rows || [];
+    const data = await fetchOnePage(paramsBase, page); // 失败会抛异常，不会拿不完整数据继续
+    const rows = data.rows || [];
     all.push(...rows);
-    if (onProgress) onProgress(all.length, json.data.total);
-    if (rows.length < 100 || all.length >= json.data.total) break;
+    if (onProgress) onProgress(all.length, data.total);
+    if (rows.length < 100 || all.length >= data.total) break;
     page++;
   }
   return all;
