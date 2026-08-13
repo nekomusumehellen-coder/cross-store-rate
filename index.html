@@ -217,6 +217,20 @@ button.toggle.active { background: var(--series-1); color: white; border-color: 
      本地双击打开、且已生成过数据的话，这里能正常读到数据显示明细表格。 -->
 <script src="./local-detail-data.js" onerror="window.__localDetailMissing = true"></script>
 <script>
+// 记住上次在页面里选的各种选项（日期区间/搜索词/打码开关/筛选等），下次打开自动恢复——
+// 2026-08-13 用户要求的。存在浏览器的 localStorage 里，按 key 分别存，出错(比如隐私模式禁用了
+// localStorage)就静默降级成"不记住"，不影响页面正常使用。
+const LS_PREFIX = 'crossStoreRate.';
+function lsGet(key, fallback) {
+  try {
+    const v = localStorage.getItem(LS_PREFIX + key);
+    return v === null ? fallback : JSON.parse(v);
+  } catch { return fallback; }
+}
+function lsSet(key, value) {
+  try { localStorage.setItem(LS_PREFIX + key, JSON.stringify(value)); } catch {}
+}
+
 let ALL_DATA = [];
 
 function loadData() {
@@ -233,13 +247,23 @@ function initControls() {
     startInput.value = ALL_DATA[0].date;
     endInput.value = ALL_DATA[ALL_DATA.length - 1].date;
   }
-  startInput.addEventListener('change', () => { setActivePreset(null); render(); });
-  endInput.addEventListener('change', () => { setActivePreset(null); render(); });
+  startInput.addEventListener('change', () => {
+    setActivePreset(null);
+    lsSet('startDate', startInput.value); lsSet('endDate', endInput.value); lsSet('preset', null);
+    render();
+  });
+  endInput.addEventListener('change', () => {
+    setActivePreset(null);
+    lsSet('startDate', startInput.value); lsSet('endDate', endInput.value); lsSet('preset', null);
+    render();
+  });
 
   const presets = [
     ['近7天', 7], ['近30天', 30], ['全部', null],
   ];
   const presetsEl = document.getElementById('presets');
+  let restoredPresetBtn = null;
+  const savedPreset = lsGet('preset', null);
   presets.forEach(([label, days]) => {
     const btn = document.createElement('button');
     btn.textContent = label;
@@ -255,10 +279,23 @@ function initControls() {
       startInput.value = startDate;
       endInput.value = endDate;
       setActivePreset(btn);
+      lsSet('startDate', startDate); lsSet('endDate', endDate); lsSet('preset', label);
       render();
     });
     presetsEl.appendChild(btn);
+    if (label === savedPreset) restoredPresetBtn = btn;
   });
+
+  // 恢复上次的选择：优先按保存的预设按钮重新点一遍（自动带出正确的起止日期）；
+  // 没有保存过预设、但保存过自定义起止日期的话，直接套用那两个日期（不算任何预设选中）
+  if (restoredPresetBtn) {
+    restoredPresetBtn.click();
+  } else {
+    const savedStart = lsGet('startDate', null);
+    const savedEnd = lsGet('endDate', null);
+    if (savedStart) startInput.value = savedStart;
+    if (savedEnd) endInput.value = savedEnd;
+  }
 }
 
 function setActivePreset(btn) {
@@ -283,10 +320,10 @@ function render() {
 
 // ---- 有效套餐用户明细（本地专用）----
 const maskPhone = (p) => (p && p.length >= 7) ? p.slice(0, 3) + '****' + p.slice(-4) : (p || '');
-let userDetailMask = true;
+let userDetailMask = lsGet('userDetailMask', true);
 let cardColorMap = {}; // cardName -> 颜色（前8名用 var(--cat-1..8)，第9名开始用程序生成的备用色，不折叠进"其他"）
-let selectedCardName = null; // 点了卡种条形统计某个色块时选中的卡名，用来筛选下方表格；再点一次/点×清空
-let selectedStatusKind = null; // 点了当日状态条形统计某个色块时选中的状态('store'/'cross'/'idle')，可以跟卡种筛选叠加
+let selectedCardName = lsGet('selectedCardName', null); // 点了卡种条形统计某个色块时选中的卡名，用来筛选下方表格；再点一次/点×清空
+let selectedStatusKind = lsGet('selectedStatusKind', null); // 点了当日状态条形统计某个色块时选中的状态('store'/'cross'/'idle')，可以跟卡种筛选叠加
 
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -327,13 +364,15 @@ function initUserDetailCard() {
   }
   cardColorMap = buildCardColorMap(records);
   const genDate = window.LOCAL_DETAIL_GENERATED_AT || '未知日期';
+  const savedDetailDate = lsGet('detailDate', genDate);
+  const savedDetailSearch = lsGet('detailSearch', '');
   body.innerHTML = `
     <div class="warn">⚠️ 这块含真实客户手机号，只在本地看，别截图/公开分享——数据生成于 ${genDate}（想看最新的重新跑一次
     <code>node gen-local-detail.js</code>），共 ${records.length} 条购买/验券记录。</div>
     <div class="detail-controls">
-      <label>查看日期 <input type="date" id="detailDate" value="${genDate}" /></label>
-      <label>手机号/昵称筛选 <input type="text" id="detailSearch" placeholder="模糊搜索" /></label>
-      <button class="toggle active" id="detailMaskBtn">手机号已打码</button>
+      <label>查看日期 <input type="date" id="detailDate" value="${escapeHtml(savedDetailDate)}" /></label>
+      <label>手机号/昵称筛选 <input type="text" id="detailSearch" placeholder="模糊搜索" value="${escapeHtml(savedDetailSearch)}" /></label>
+      <button class="toggle${userDetailMask ? ' active' : ''}" id="detailMaskBtn">${userDetailMask ? '手机号已打码' : '手机号明文'}</button>
     </div>
     <div class="kpi-row" id="detailKpiRow" style="grid-template-columns: repeat(2, 1fr); max-width: 480px;"></div>
     <p class="desc" style="margin-top:4px;">下面这行条形统计是当前筛选条件下（查看日期+搜索）有效套餐按卡种的占比，
@@ -346,13 +385,14 @@ function initUserDetailCard() {
     <div id="statusCardCompWrap"></div>
     <div class="scroll-table" id="detailTableArea"></div>
   `;
-  document.getElementById('detailDate').addEventListener('change', renderUserDetail);
-  document.getElementById('detailSearch').addEventListener('input', renderUserDetail);
+  document.getElementById('detailDate').addEventListener('change', (e) => { lsSet('detailDate', e.target.value); renderUserDetail(); });
+  document.getElementById('detailSearch').addEventListener('input', (e) => { lsSet('detailSearch', e.target.value); renderUserDetail(); });
   const maskBtn = document.getElementById('detailMaskBtn');
   maskBtn.addEventListener('click', () => {
     userDetailMask = !userDetailMask;
     maskBtn.textContent = userDetailMask ? '手机号已打码' : '手机号明文';
     maskBtn.classList.toggle('active', userDetailMask);
+    lsSet('userDetailMask', userDetailMask);
     renderUserDetail();
   });
   renderUserDetail();
@@ -535,6 +575,7 @@ function renderCardComposition(filtered, containerId, idPrefix) {
   }));
   renderCompositionBar(containerId || 'compArea', items, selectedCardName, (key) => {
     selectedCardName = selectedCardName === key ? null : key;
+    lsSet('selectedCardName', selectedCardName);
     renderUserDetail();
   }, '有效套餐按卡种占比，点击色块可筛选下方表格', idPrefix || 'card');
 }
@@ -554,6 +595,7 @@ function renderStatusComposition(withStatus) {
     .map((k) => ({ key: k, label: STATUS_KIND_META[k].label, count: counts[k], color: STATUS_KIND_META[k].color }));
   renderCompositionBar('statusCompArea', items, selectedStatusKind, (key) => {
     selectedStatusKind = selectedStatusKind === key ? null : key;
+    lsSet('selectedStatusKind', selectedStatusKind);
     renderUserDetail();
   }, '有效套餐用户当日状态占比，点击色块可筛选下方表格', 'status');
 }
@@ -685,8 +727,8 @@ function renderLockedChart(data) {
 // window.LOCAL_LOCKED_ORDERS（含手机号，本地专用，不进公开仓库）。判定"代客下单锁座"还是
 // "小程序下单锁座"用的是订单的 paymentMethod 字段，具体判定依据见 lib.js 的 classifyLockedOrderBookingType()
 // 注释——这块本身是靠真实抓包验证过的，不是瞎猜的。
-let lockedOrderMask = true;
-let selectedBookingType = null; // 点了预定方式条形统计的色块时选中的类型，筛选下方表格
+let lockedOrderMask = lsGet('lockedOrderMask', true);
+let selectedBookingType = lsGet('selectedBookingType', null); // 点了预定方式条形统计的色块时选中的类型，筛选下方表格
 
 function initLockedOrderCard() {
   const body = document.getElementById('lockedOrderBody');
@@ -700,26 +742,28 @@ function initLockedOrderCard() {
     return;
   }
   const genDate = window.LOCAL_DETAIL_GENERATED_AT || '未知日期';
+  const savedLockedSearch = lsGet('lockedSearch', '');
   body.innerHTML = `
     <div class="warn">⚠️ 这块含真实客户手机号，只在本地看，别截图/公开分享——数据生成于 ${genDate}，共 ${orders.length} 条锁座订单
     （单笔订座订单时间跨度超过3天，已取消的订单不算）。</div>
     <p class="desc">"预定方式"根据订单支付方式字段判断：支付方式是"6"/"8"（实测都是线下结算/代客下单相关）
     算"代客下单锁座"，其他算"小程序下单锁座"——这个判断依据是真实抓包验证过的，见 <code>lib.js</code> 注释。</p>
     <div class="detail-controls">
-      <label>手机号/昵称/座位号筛选 <input type="text" id="lockedSearch" placeholder="模糊搜索" /></label>
-      <button class="toggle active" id="lockedMaskBtn">手机号已打码</button>
+      <label>手机号/昵称/座位号筛选 <input type="text" id="lockedSearch" placeholder="模糊搜索" value="${escapeHtml(savedLockedSearch)}" /></label>
+      <button class="toggle${lockedOrderMask ? ' active' : ''}" id="lockedMaskBtn">${lockedOrderMask ? '手机号已打码' : '手机号明文'}</button>
     </div>
     <div class="kpi-row" id="lockedKpiRow" style="grid-template-columns: repeat(2, 1fr); max-width: 480px;"></div>
     <p class="desc" style="margin-top:4px;">下面是预定方式的占比，点击色块可以筛选下方表格</p>
     <div id="lockedCompArea"></div>
     <div class="scroll-table" id="lockedTableArea"></div>
   `;
-  document.getElementById('lockedSearch').addEventListener('input', renderLockedOrders);
+  document.getElementById('lockedSearch').addEventListener('input', (e) => { lsSet('lockedSearch', e.target.value); renderLockedOrders(); });
   const maskBtn = document.getElementById('lockedMaskBtn');
   maskBtn.addEventListener('click', () => {
     lockedOrderMask = !lockedOrderMask;
     maskBtn.textContent = lockedOrderMask ? '手机号已打码' : '手机号明文';
     maskBtn.classList.toggle('active', lockedOrderMask);
+    lsSet('lockedOrderMask', lockedOrderMask);
     renderLockedOrders();
   });
   renderLockedOrders();
@@ -746,6 +790,7 @@ function renderLockedOrders() {
   }));
   renderCompositionBar('lockedCompArea', compItems, selectedBookingType, (key) => {
     selectedBookingType = selectedBookingType === key ? null : key;
+    lsSet('selectedBookingType', selectedBookingType);
     renderLockedOrders();
   }, '锁座订单按预定方式占比，点击色块可筛选下方表格', 'locked');
 
