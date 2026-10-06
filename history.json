@@ -3747,5 +3747,12 @@
     "denominator": 52,
     "rate": 5.77,
     "lockedSeatUsers": 14
+  },
+  {
+    "date": "2026-10-05",
+    "numerator": 2,
+    "denominator": 51,
+    "rate": 3.92,
+    "lockedSeatUsers": 14
   }
 ]
