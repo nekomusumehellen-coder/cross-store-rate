@@ -3950,5 +3950,12 @@
     "denominator": 47,
     "rate": 8.51,
     "lockedSeatUsers": 20
+  },
+  {
+    "date": "2026-11-09",
+    "numerator": 5,
+    "denominator": 49,
+    "rate": 10.2,
+    "lockedSeatUsers": 20
   }
 ]
